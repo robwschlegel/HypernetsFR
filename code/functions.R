@@ -1457,3 +1457,73 @@ global_scatterplot <- function(sensor_Y){#, panel_labels = "", cut_legend = "no"
 }
 
 # TODO: Add scatterplot_stack back into workflow once other satellite products are added
+# Stack the triptych output as required
+# sensor_Z = "OLCI"
+global_scatterplot_stack <- function(sensor_Z){
+  
+  # Create ply grid
+  ply_grid <- sensor_grid(var_name, sensor_Z) |> 
+    dplyr::select(var_name, sensor_Y) |> distinct()
+  
+  # Get sensor variant count
+  sensor_count <- length(unique(ply_grid$sensor_Y))
+
+  # Create figures
+  if(var_name != "RHOW"){
+    fig_a <- global_triptych("ED", "HYPERPRO", cut_legend = "cut", panel_labels = c("a)", "b)", "c)"))
+    fig_b <- global_triptych("LU", "HYPERPRO", cut_legend = "cut")
+    fig_c <- global_triptych("LD", "HYPERPRO", cut_legend = "cut")
+    fig_d <- global_triptych("LW", "HYPERPRO", cut_legend = "cut", panel_labels = c("f)", "g)", "h)"))
+    fig_legend <- global_triptych("ED", "HYPERPRO", cut_legend = "extract")
+    # fig_legend_bottom <- cowplot::get_legend(fig_legend)
+    
+    # Combine into special layout
+    fig_mid <- ggpubr::ggarrange(fig_b, fig_c, ncol = 2, nrow = 1, 
+                                 labels = c("d)", "e)"), hjust = c(-4.7, -5.4), vjust = c(0.5, 0.5))
+    fig_stack <- ggpubr::ggarrange(fig_a, fig_mid, fig_d, ncol = 1, nrow = 3, 
+                                   # labels = c("a)", "", "d)"), hjust = c(-2.2, 0, -1.5), 
+                                   heights = c(1.0, 0.84, 0.90),
+                                   legend.grob = fig_legend,
+                                   common.legend = TRUE, legend = "bottom") + 
+      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+    ggsave(paste0("figures/global_scatter_OTHER_in_situ.png"), fig_stack, width = 11, height = 12)
+  } else if(sensor_Z == "HYPERPRO"){
+    fig_stack <- global_triptych("RHOW", "HYPERPRO", panel_labels = c("a)", "b)", "c)")) + 
+      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+    ggsave(paste0("figures/global_scatter_",var_name,"_in_situ.png"), fig_stack, width = 12, height = 4.5)
+    # TODO: Optimise this logic gate to make this decision automagically
+  } else if(sensor_Z == "OLCI"){
+    fig_stack <- global_triptych("RHOW", "S3", panel_labels = c("a)", "b)", "c)")) + 
+      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+    ggsave(paste0("figures/global_scatter_",var_name,"_OLCI.png"), fig_stack, width = 12, height = 4.5)
+  } else if(sensor_count == 1){
+    fig_stack <- global_triptych(var_name, ply_grid$sensor_Y[1], panel_labels = c("a)", "b)", "c)")) + 
+      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+    ggsave(paste0("figures/global_scatter_",var_name,"_",sensor_Z,".png"), fig_stack, width = 12, height = 4.5)
+  } else if(sensor_count == 2){
+    fig_a <- global_triptych(var_name, ply_grid$sensor_Y[1], cut_legend = "cut", panel_labels = c("a)", "b)", "c)"))
+    fig_b <- global_triptych(var_name, ply_grid$sensor_Y[2], panel_labels = c("d)", "e)", "f)"))
+    fig_stack <- ggpubr::ggarrange(fig_a, fig_b, ncol = 1, nrow = sensor_count, 
+                                   # labels = c("a)", "b)"), 
+                                   heights = c(1, 1.14)) + 
+      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+    # fig_stack <- fig_a / fig_b + plot_layout(guides = "collect") &
+    #   theme(legend.position = "bottom") #+ 
+      # plot_annotation(tag_levels = "a", tag_suffix = ")")
+    # fig_stack +
+    #   annotate("text", x = -Inf, y = Inf, label = "a)", vjust = 0, hjust = -2) +
+    #   annotate("text", x = -Inf, y = Inf, label = "b)", vjust = 0, hjust = 5) #+
+      # annotate("text", x = -Inf, y = Inf, label = "c)", vjust = 2, hjust = 1.2)
+    ggsave(paste0("figures/global_scatter_",var_name,"_",sensor_Z,".png"), fig_stack, width = 12, height = 9)
+  } else if(sensor_count == 3){
+    fig_a <- global_triptych(var_name, ply_grid$sensor_Y[1], cut_legend = "cut", panel_labels = c("a)", "b)", "c)"))
+    fig_b <- global_triptych(var_name, ply_grid$sensor_Y[2], cut_legend = "cut", panel_labels = c("d)", "e)", "f)"))
+    fig_c <- global_triptych(var_name, ply_grid$sensor_Y[3], panel_labels = c("h)", "i)", "j)"))
+    fig_stack <- ggpubr::ggarrange(fig_a, fig_b, fig_c, ncol = 1, nrow = sensor_count, 
+                                   # labels = c("a)", "b)", "c)"), 
+                                   heights = c(1, 1, 1.13)) + 
+      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+    ggsave(paste0("figures/global_scatter_",var_name,"_",sensor_Z,".png"), fig_stack, width = 12, height = 13)
+  }
+}
+

@@ -22,10 +22,10 @@ source("code/functions.R")
 global_scatterplot("S3")
 
 # Satellite
-# global_scatterplot("MODIS") # To add
-# global_scatterplot("VIIRS")
-# global_scatterplot("OLCI")
-# global_scatterplot("OCI")
+# global_scatterplot_stack("MODIS") # To add
+# global_scatterplot_stack("VIIRS")
+# global_scatterplot_stack("OLCI")
+# global_scatterplot_stack("OCI")
 
 
 # Figure 1 ---------------------------------------------------------------
