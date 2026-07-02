@@ -64,7 +64,7 @@ wave_length_bands <- c(380, 400, 412, 443, 490, 510, 560, 620, 673, 700, 885, 10
 
 # Load all global stats
 # NB: Careful with the exact indexing of files here
-global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE),#[c(1:3)], 
+global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(2)], 
                                 read_csv, show_col_types = FALSE) #|> 
   # bind_rows(global_stats_wavelengths)
 write_csv(global_stats_all, file = "output/global_stats_all.csv")
