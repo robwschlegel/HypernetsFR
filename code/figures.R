@@ -15,6 +15,10 @@ source("code/functions.R")
 # library(luna)
 
 
+# TODO: Rather change the colour palette so that the bands for each satellite are shown in 
+# the legend for what exactly they are. Keeping the current spectrum range colours open
+# for PACE.
+
 # Global scatterplots -----------------------------------------------------
 
 # TODO: Add the stacked scatterplots by sensors
