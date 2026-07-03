@@ -23,6 +23,8 @@ source("code/functions.R")
 
 # TODO: Add the stacked scatterplots by sensors
 # Get the code from HypernetsTara
+global_scatterplot("S3A")
+global_scatterplot("S3B")
 global_scatterplot("S3")
 
 # Satellite

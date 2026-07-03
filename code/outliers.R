@@ -124,7 +124,7 @@ matchup_OLCI <- read_csv("output/matchup_stats_RHOW_OLCI.csv") |>
          file_name = gsub("_V4", "", file_name)) # Rename for easier joining with base data
 
 # OLCI files
-file_list_OLCI <- stringr::str_subset(string = dir("~/pCloud Drive/Documents/OMTAB/HYPERNETS/FR/", 
+file_list_OLCI <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/", 
                                          pattern = "S3", full.names = TRUE, recursive = TRUE), pattern = "csv")
 
 # Load base W_nm matchup values
