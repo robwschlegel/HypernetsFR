@@ -50,3 +50,6 @@ rsconnect/
 
 # MacOS
 .DS_Store
+
+## Pycache
+meta/__pycache__/

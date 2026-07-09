@@ -9,10 +9,10 @@ source("code/functions.R")
 
 # Individual matchup stats ------------------------------------------------
 
-# process_sensor("MODIS") # To add
-# process_sensor("VIIRS")
+process_sensor("MODIS")
+process_sensor("VIIRS")
 process_sensor("OLCI")
-# process_sensor("OCI")
+process_sensor("OCI")
 
 # Re-load all single matchups
 matchup_single_all <- map_dfr(dir("output", pattern = "matchup_stats_", full.names = TRUE), read_csv)
@@ -45,10 +45,10 @@ source("code/outliers.R")
 
 # NB: Run code/outliers.R before the global stats in order to filter outliers
 
-# process_sensor("MODIS", "global") # To add
-# process_sensor("VIIRS", "global")
+process_sensor("MODIS", "global")
+process_sensor("VIIRS", "global")
 process_sensor("OLCI", "global")
-# process_sensor("OCI", "global")
+process_sensor("OCI", "global")
 
 # Load outlier reports
 outliers_sat <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) |> distinct()

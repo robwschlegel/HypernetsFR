@@ -15,23 +15,13 @@ source("code/functions.R")
 # library(luna)
 
 
-# TODO: Rather change the colour palette so that the bands for each satellite are shown in 
-# the legend for what exactly they are. Keeping the current spectrum range colours open
-# for PACE.
-
 # Global scatterplots -----------------------------------------------------
 
-# TODO: Add the stacked scatterplots by sensors
-# Get the code from HypernetsTara
-global_scatterplot("S3A")
-global_scatterplot("S3B")
-global_scatterplot("S3")
-
 # Satellite
-# global_scatterplot_stack("MODIS") # To add
-# global_scatterplot_stack("VIIRS")
-# global_scatterplot_stack("OLCI")
-# global_scatterplot_stack("OCI")
+global_scatterplot_stack("MODIS")
+global_scatterplot_stack("VIIRS")
+global_scatterplot_stack("OLCI")
+global_scatterplot_stack("OCI")
 
 
 # Figure 1 ---------------------------------------------------------------
@@ -175,20 +165,20 @@ station_count <- station_in_situ |>
 # Run on all of them
 # MODIS_mask <- MODIS_proc(mask_files, bbox = bbox, water_mask = TRUE)
 # writeRaster(MODIS_mask, "data/MODIS/study_area_mask.tif", overwrite = TRUE)
-MODIS_mask <- rast("data/MODIS/study_area_mask.tif")
+MODIS_mask <- terra::rast("data/MODIS/study_area_mask.tif")
 plot(MODIS_mask)
 
 # Prep one day of MODIS data
 # MODIS_rast <- MODIS_proc(rast_files, bbox = bbox)
 # writeRaster(MODIS_rast, "data/MODIS/study_area_rast.tif", overwrite = TRUE)
-MODIS_rast <- rast("data/MODIS/study_area_rast.tif")
+MODIS_rast <- terra::rast("data/MODIS/study_area_rast.tif")
 plot(MODIS_rast)
 
 # Projected the 250 m mask to the same grid as the 500 m raster data
-MODIS_mask_proj <- project(MODIS_mask, MODIS_rast)
+MODIS_mask_proj <- terra::project(MODIS_mask, MODIS_rast)
 
 # Mask the raster data
-MODIS_water <- mask(MODIS_rast, MODIS_mask_proj)
+MODIS_water <- terra::mask(MODIS_rast, MODIS_mask_proj)
 plot(MODIS_water)
 
 # Convert to data.frame for easy plotting
@@ -245,11 +235,11 @@ ggsave("figures/fig_1.png", pl_map, height = 12, width = 18)
 # Add variance bars for multispectral data
 # Plus the photos from HYPERNETS
 
-# Using the HYPERPRO 2024-08-12 10:53:00 measurement as a reference as this has a PACE and VIIRS_N matchup
+# Using the HYPERPRO 2024-08-12 10:53:00 measurement as a reference as this has a PACE and SNPP matchup
 pro_pace2 <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERPRO_vs_PACE_V2/HYPERPRO_vs_PACE_V2_vs_20240812T105300_RHOW.csv", delim = ";", col_types = "ccccnnic")
 pro_pace3 <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERPRO_vs_PACE_V30/HYPERPRO_vs_PACE_V30_vs_20240812T105300_RHOW.csv", delim = ";", col_types = "ccccnnic")
 pro_pace31 <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERPRO_vs_PACE_V31/HYPERPRO_vs_PACE_V31_vs_20240812T105300_RHOW.csv", delim = ";", col_types = "ccccnnic")
-pro_viirsn <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERPRO_vs_VIIRS_N/HYPERPRO_vs_VIIRS_N_vs_20240812T105300_RHOW.csv", delim = ";", col_types = "ccccnnic")
+pro_viirsn <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERPRO_vs_SNPP/HYPERPRO_vs_SNPP_vs_20240812T105300_RHOW.csv", delim = ";", col_types = "ccccnnic")
 pro_hyp <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERNETS_vs_HYPERPRO/HYPERNETS_vs_HYPERPRO_vs_20240812T104500_RHOW.csv", delim = ";", col_types = "ccccnnic")
 pro_tri <- read_delim("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_TRIOS_vs_HYPERPRO/TRIOS_vs_HYPERPRO_vs_20240812T104536_RHOW.csv", delim = ";", col_types = "ccccnnic")
 
@@ -276,7 +266,7 @@ pro_all_long <- pro_all |>
                             sensor == "PACE_V2" ~ "PACE v2.0",
                             sensor == "PACE_V30" ~ "PACE v3.0",
                             sensor == "PACE_V31" ~ "PACE v3.1",
-                            sensor == "VIIRS_N" ~ "VIIRS SNPP",
+                            sensor == "SNPP" ~ "VIIRS SNPP",
                             sensor == "Hyp" ~ "HYPERNETS",
                             sensor == "Hyp_nosc" ~ "HYPERNETS (nosc)",
                             sensor == "TRIOS" ~ "So-Rad")) |> 
@@ -377,9 +367,9 @@ df_matchups_global <- read_csv("output/global_stats_all.csv", show_col_types = F
                               sensor_Y == "PACE_V2" ~ "PACE v2.0",
                               sensor_Y == "PACE_V30" ~ "PACE v3.0",
                               sensor_Y == "PACE_V31" ~ "PACE v3.1",
-                              sensor_Y == "VIIRS_N" ~ "SNPP",
-                              sensor_Y == "VIIRS_J1" ~ "JPSS1",
-                              sensor_Y == "VIIRS_J2" ~ "JPSS2"),
+                              sensor_Y == "SNPP" ~ "SNPP",
+                              sensor_Y == "JPSS1" ~ "JPSS1",
+                              sensor_Y == "JPSS2" ~ "JPSS2"),
         sensor_X = case_when(sensor_X == "HYPERPRO" ~ "HyperPRO",
                              sensor_X == "TRIOS" ~ "So-Rad",
                              sensor_X == "HYPERNETS" ~ "HYPERNETS"))
@@ -401,13 +391,13 @@ file_list_sat_hypernets <- file_list_sat[grepl("RHOW_HYPERNETS", file_list_sat)]
 
 ## Load all needed files
 df_sat_hyperpro <- map_dfr(file_list_sat_hyperpro, load_matchup_long) |> 
-  pivot_longer(AQUA:VIIRS_N, values_to = "value_sat", names_to = "sensor_sat") |> 
+  pivot_longer(AQUA:SNPP, values_to = "value_sat", names_to = "sensor_sat") |> 
   mutate(sensor_is = "HYPERPRO") |> dplyr::rename(value_is = HYPERPRO)
 df_sat_trios <- map_dfr(file_list_sat_trios, load_matchup_long) |> 
-  pivot_longer(AQUA:VIIRS_N, values_to = "value_sat", names_to = "sensor_sat") |> 
+  pivot_longer(AQUA:SNPP, values_to = "value_sat", names_to = "sensor_sat") |> 
   mutate(sensor_is = "TRIOS") |> dplyr::rename(value_is = TRIOS)
 df_sat_hypernets <- map_dfr(file_list_sat_hypernets, load_matchup_long) |> 
-  pivot_longer(AQUA:VIIRS_N, values_to = "value_sat", names_to = "sensor_sat") |> 
+  pivot_longer(AQUA:SNPP, values_to = "value_sat", names_to = "sensor_sat") |> 
   mutate(sensor_is = "Hyp") |> dplyr::rename(value_is = Hyp)
 
 ## Combine into one dataframe
@@ -421,9 +411,9 @@ df_sat_all <- bind_rows(df_sat_hyperpro, df_sat_trios, df_sat_hypernets) |>
                                 sensor_sat == "PACE_V2" ~ "PACE v2.0",
                                 sensor_sat == "PACE_V30" ~ "PACE v3.0",
                                 sensor_sat == "PACE_V31" ~ "PACE v3.1",
-                                sensor_sat == "VIIRS_N" ~ "VIIRS SNPP",
-                                sensor_sat == "VIIRS_J1" ~ "VIIRS J1",
-                                sensor_sat == "VIIRS_J2" ~ "VIIRS J2"),
+                                sensor_sat == "SNPP" ~ "VIIRS SNPP",
+                                sensor_sat == "JPSS1" ~ "VIIRS J1",
+                                sensor_sat == "JPSS2" ~ "VIIRS J2"),
          sensor_is = case_when(sensor_is == "HYPERPRO" ~ "HyperPRO",
                                sensor_is == "TRIOS" ~ "So-Rad",
                                sensor_is == "Hyp" ~ "HYPERNETS"),

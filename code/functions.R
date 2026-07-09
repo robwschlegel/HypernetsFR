@@ -13,8 +13,8 @@ library(geosphere) # For determining distance between points
 library(ggtext) # For rich text labels
 library(ggimage) # For adding .jpg files to figures
 library(patchwork) # For complex paneling of figures
-library(future)
-library(furrr)
+# library(future)
+# library(furrr)
 library(doParallel); registerDoParallel(cores = detectCores() - 2)
 
 
@@ -29,16 +29,16 @@ options(scipen = 9999)
 
 # Define the wavelength (nm) band colour palette
 colour_nm_func <- function(sensor_Y){
-  if(sensor_Y == "PACE_V2"){
+  if(sensor_Y == "PACE"){
     labels_nm <- c("351-400", "401-450", "451-500", "501-550", "551-600", "601-650", "651-700", "701-750", "751-800", "801-900", "901-1050")
-    colour_nm <- c("darkviolet", "violet", "blue", "darkgreen", "yellow", "orange", "red", "firebrick", "sienna", "grey70", "black")
+    colour_nm <- c("darkviolet", "violet", "blue", "darkgreen", "yellow", "orange", "red", "firebrick", "sienna", "black", "#777777")
   } else if(sensor_Y == "AQUA"){
     labels_nm <- c("412","443","469","488","531","547","555","645","667","678")
     colour_nm <- c("darkviolet","blue","cyan","green","yellowgreen","yellow","orange","red","firebrick","sienna")
-  } else if(sensor_Y == "VIIRS_N"){
+  } else if(sensor_Y == "SNPP"){
     labels_nm <- c("410","443","486","551","671")
     colour_nm <- c("darkviolet","blue","cyan","yellowgreen","red")
-  } else if(sensor_Y %in% c("VIIRS_J1", "VIIRS_J2")){
+  } else if(sensor_Y %in% c("JPSS1", "JPSS2")){
     labels_nm <- c("411","445","489","556","667")
     colour_nm <- c("darkviolet","blue","cyan","yellowgreen","red")
   } else if(sensor_Y %in% c("S3A", "S3B", "S3", "S3_all")){
@@ -46,7 +46,7 @@ colour_nm_func <- function(sensor_Y){
     colour_nm <- c("darkviolet","blueviolet","blue4","blue2",
                    "#00BFFF","#00FF7F","#ADFF2F","#FFFF00",
                    "#FFD700","#FFA500","#FF8C00","#FF4500",
-                   "#FF0000","#8B0000","#4b0000","#000000")
+                   "#FF0000","#8B0000","#4b0000","#777777")
   } else {
     stop(paste0("Incorrect value for 'sensor_Y' : ",sensor_Y))
   }
@@ -62,6 +62,9 @@ file_path_build <- function(site_name, sat_name){
 
 # Load a single matchup file and create mean values from all replicates
 # file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERNETS_vs_S3A/HYPERNETS_vs_S3A_V4_vs_20240808T065700_RHOW.csv"
+# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_JPSS1/JPSS1_20240531T120600_vs_HYPERNETS_20240531T114500_RHOW_C.csv"
+# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_SNPP/SNPP_20240611T131200_vs_HYPERNETS_20240611T124500_RHOW_C.csv"
+# file_name <- file_path
 load_matchup_mean <- function(file_name){
   
   # message(paste0("Started loading : ", file_name))
@@ -74,11 +77,13 @@ load_matchup_mean <- function(file_name){
   
   # Get means per file
   # NB: Satellite matchups have a different structure than in situ matchups
-  if("weighted" %in% df_match$data_type){
+  # NB: For the moment, JPSS1 files have 'rhow weighted' not 'weighted', so this is accounted for below
+  # This needs to be fixed in Hypernets_matchups
+  if(any(df_match$data_type %in% c("weighted", "rhow weighted", "computed weighted"))){
     df_mean <- df_match |>
       mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor)) |>
       filter(sensor != "Hyp_nosc") |> 
-      filter(data_type == "weighted")
+      filter(data_type %in% c("weighted", "rhow weighted", "computed weighted"))
   } else {
     df_mean <- df_match |> 
       filter(grepl(" 1", sensor)) |> 
@@ -91,56 +96,18 @@ load_matchup_mean <- function(file_name){
       dplyr::select(-radiometer_id, -data_type, -type, -pixel_pos, -variability_centered)
 
   # Double check that only two rows of data have been selected
-  if(nrow(df_mean) != 2) warning(paste0("More than two rows in : ", file_path))
-  
-  # Correct S3A and S3B names if necessary
-  # df_mean <- df_mean |> 
-  #   mutate(sensor = case_when(sensor == "S3A_V4" ~ "S3A",
-  #                             sensor == "S3B_V4" ~ "S3B",
-  #                             TRUE ~ sensor))
+  if(nrow(df_mean) > 2){
+    stop(paste0("More than 2 rows returned for : ", file_name))
+  }
+  if(nrow(df_mean) < 2){
+    cat(paste0("Less than 2 rows returned for : ", file_name,",\n defaulting to unweighted in situ data for now..."))
+    df_mean <- df_match |>
+      mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor)) |>
+      filter(sensor != "Hyp_nosc") |> 
+      filter(data_type %in% c("computed", "computed weighted")) |> 
+      dplyr::select(-radiometer_id, -data_type, -type, -pixel_pos, -variability_centered)
+  }
 
-  # For the moment, not using BRDF corrections
-  # Replace BRDF corrected values for HYPERNETS
-  # if(grepl("RHOW_HYPERNETS", file_name)){
-
-  #   # Get sensors in wide file
-  #   sensors <- unique(df_mean$sensor)
-  #   sensor_not_Hyp <- sensors[!grepl("Hyp", sensors)]
-  #   if(length(sensor_not_Hyp) != 1) warning(paste0("More than two sensors in : ", sensor_not_Hyp))
-    
-  #   # Get dateTime of Hyp measurements
-  #   df_dateTime <- df_mean |> 
-  #     mutate(date = as.POSIXct(paste0(day, time), format = "%Y%m%d%H%M%S", tz = "UTC+2"), .before = "day") |> 
-  #     filter(sensor == "Hyp")
-
-  #   # Load and prep BRDF corrected HYPERNETS data
-  #   BRDF_corr <- read_csv("data/BRDF_corr/HYPERNETS_all_rhow_BRDF_corr.csv", show_col_types = FALSE) |> 
-  #     # dplyr::rename(sensor_YY = sensor_Y) |> 
-  #     filter(sensor_Y == sensor_not_Hyp) |> 
-  #     pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "BRDF_corr") |> 
-  #     mutate(wavelength = as.numeric(wavelength),
-  #             date = as.POSIXct(date, tz = "UTC+2")) |> 
-  #     filter(sensor == "Hyp") |> 
-  #       filter(!is.na(BRDF_corr),
-  #             date == df_dateTime$date[1]) |> 
-  #     dplyr::select(sensor, wavelength, BRDF_corr)
-
-  #   # Check that the date filter worked
-  #   if(nrow(BRDF_corr) == 0) stop("Date filter with BRDF correction file did not work correctly.")
-    
-  #   # Pivot longer for cleaner join
-  #   df_mean_long <- df_mean |> 
-  #     pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
-  #     mutate(wavelength = as.numeric(wavelength)) |> 
-  #     left_join(BRDF_corr, by = c("sensor", "wavelength")) |> 
-  #     mutate(value = case_when(!is.na(BRDF_corr) ~ BRDF_corr, TRUE ~ value)) |> 
-  #     dplyr::select(-BRDF_corr)
-
-  #   # Pivot wider back to expected format
-  #   df_mean <- df_mean_long |> 
-  #     pivot_wider(names_from = wavelength, values_from = value)
-  # }
-  
   # Exit
   # message(paste0("Finished loading : ", file_name))
   return(df_mean)
@@ -148,7 +115,9 @@ load_matchup_mean <- function(file_name){
 
 # Load a single matchup file directly into long format
 # file_name <- file.path(folder_path, file_uniq_list$file_name)[1]
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERNETS_vs_PACE_V30/HYPERNETS_vs_PACE_V30_vs_20240809T090000_RHOW.csv"
+# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_S3A/S3A_20240531T101658_vs_HYPERNETS_20240531T100000_RHOW.csv"
+# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_JPSS1/JPSS1_20240531T120600_vs_HYPERNETS_20240531T114500_RHOW_C.csv"
+# file_name <- file_list_clean[[1]]
 load_matchup_long <- function(file_name){
   
   df_mean <- load_matchup_mean(file_name)
@@ -157,15 +126,11 @@ load_matchup_long <- function(file_name){
   df_long <- df_mean |> 
     pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
     dplyr::select(-day, -time, -longitude, -latitude) |>
+    # filter(value <= 1) |>  # Remove erroneously high values
     pivot_wider(names_from = sensor, values_from = value) |>
     na.omit() |> 
     mutate(wavelength = as.numeric(wavelength),
-           file_name = basename(file_name), .before = "wavelength") #|> 
-  # This is now determned per product based on wavebands
-    # mutate(wavelength_group = cut(wavelength,
-    #                               breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050),
-    #                               labels = labels_nm,
-    #                               include.lowest = TRUE, right = TRUE), .after = "wavelength")
+           file_name = basename(file_name), .before = "wavelength")
 }
 
 # Load the variance data for a matchup file
@@ -176,19 +141,15 @@ load_matchup_var <- function(file_name){
     df_match <- read_delim(file_name, delim = ";", col_types = "ccccnnic")
   )
   colnames(df_match)[1] <- "sensor"
-
-  # Determine variable name for use below
-  var_name <- gsub(".csv", "", str_split(basename(file_name), "_")[[1]][6])
-  var_name_lower <- tolower(var_name)
   
   # Calculate uncertainties per wavelength
   df_var <- df_match |> 
     mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor),
-           var_name = var_name) |>
+           var_name = "rhow") |>
     filter(!(sensor %in% c("Hyp_nosc"))) |> 
     # distinct() |> 
     dplyr::select(-day, -time, -latitude, -longitude, -radiometer_id, -type) |> 
-    mutate(data_type = case_when(data_type == var_name_lower ~ "var_value", TRUE ~ data_type)) |> 
+    mutate(data_type = case_when(data_type == "rhow" ~ "var_value", TRUE ~ data_type)) |> 
     pivot_longer( cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
     pivot_wider(names_from = data_type, values_from = value) |>
     # na.omit() |> 
@@ -370,9 +331,9 @@ sensor_grid <- function(sensor_Z){
     if(sensor_Z == "MODIS"){
       sensor_Y <- c("AQUA")
     } else if(sensor_Z == "OCI"){
-      sensor_Y <- c("PACE_V2", "PACE_V30", "PACE_V31")
+      sensor_Y <- c("PACE")
     } else if(sensor_Z == "VIIRS"){
-      sensor_Y <- c("VIIRS_N", "VIIRS_J1", "VIIRS_J2")
+      sensor_Y <- c("SNPP", "JPSS1", "JPSS2")
     } else if(sensor_Z == "OLCI"){
       sensor_Y <- c("S3A", "S3B")
     } else {
@@ -384,19 +345,19 @@ sensor_grid <- function(sensor_Z){
   
   # Create grid for mdply()
   ply_grid <- expand_grid(site_name = c("MAFR"), # ite_name = c("MAFR", "THAU"), # TODO: Add THAU once these data are available
-                          var_name = "RHOW", sensor_X = "HYPERNETS", sensor_Y = sensor_Y) |> distinct()
+                          sensor_Y = sensor_Y) |> distinct()
 }
 
-# Output desired wavelengths based on sensor_Y and var_name
+# Output desired wavelengths based on sensor_Y
 # TODO: Increase wm range into IR
-W_nm_out <- function(sensor_Y, var_name){
-  if(sensor_Y %in% c("PACE_V2", "PACE_V30", "PACE_V31")){
+W_nm_out <- function(sensor_Y){
+  if(sensor_Y == "PACE"){
     W_nm <- 350:1150
   } else if(sensor_Y == "AQUA"){
     W_nm <- c(412, 443, 469, 488, 531, 547, 555, 645, 667, 678)
-  } else if(sensor_Y == "VIIRS_N"){
+  } else if(sensor_Y == "SNPP"){
     W_nm = c(410, 443, 486, 551, 671)
-  } else if(sensor_Y %in% c("VIIRS_J1", "VIIRS_J2")){
+  } else if(sensor_Y == "JPSS1" | sensor_Y == "JPSS2"){
     W_nm <- c(411, 445, 489, 556, 667)
   } else if(sensor_Y %in% c("S3A", "S3B", "S3", "S3_all")){
     W_nm <- c(400, 412, 442, 490, 510, 560, 620, 665, 673, 681, 709, 754, 779, 865, 885, 1020)
@@ -565,7 +526,7 @@ base_stats <- function(x_vec, y_vec){
     model_II_fit <- lmodel2::lmodel2(y_clean ~ x_clean,
                                      range.y = "relative", 
                                      range.x = "relative",
-                                     nperm = 999)
+                                     nperm = 99)
   # print(model_II_fit)
 
   # Extract results for chosen method
@@ -623,98 +584,6 @@ base_stats <- function(x_vec, y_vec){
   return(df_stats)
 }
 
-# Extract all files for a given sensor and determine measurement uncertainty
-# var_name = "ED"; sensor_X = "HYPERPRO"
-# var_name = "LD"; sensor_X = "TRIOS"
-# var_name = "LU"; sensor_X = "HYPERNETS"
-# var_name = "RHOW"; sensor_X = "HYPERPRO"
-# var_name = "RHOW"; sensor_X = "PACE_V2"
-sensor_uncertainty <- function(var_name, sensor_X){
-  
-  # List of all viable folders
-  folder_options <- dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/", full.names = TRUE)
-
-  # Create file path
-  folder_paths <- folder_options[grepl(var_name, folder_options)]
-  folder_paths <- folder_paths[grepl(sensor_X, folder_paths)]
-  # folder_paths <- folder_options[grepl(sensor_X, folder_options)]
-
-  # List all files in directory
-  file_list <- list.files(folder_paths, pattern = "*.csv", full.names = TRUE)
-  
-  # Remove stats output files
-  file_list_clean <- file_list[!grepl("all|global|AQUA|S3|VIIRS", file_list)]
-  if(!grepl("PACE", sensor_X)) file_list_clean <- file_list_clean[!grepl("PACE", file_list_clean)]
-
-  # Load relevant mathcup files to use for screening bad files
-  match_base_files <- dir("~/HypernetsTara/output", pattern = paste0("matchup_stats_",var_name), full.names = TRUE)
-  if(var_name == "RHOW"){
-    if(grepl("PACE", sensor_X)){
-      match_base_files <- match_base_files[grepl("OCI", match_base_files)]
-    } else {
-      match_base_files <- match_base_files[grepl("in_situ", match_base_files)]
-    }
-  }
-  match_base_details <- read_csv(match_base_files) |> 
-    dplyr::select(file_name) |> distinct()
-  if(nrow(match_base_details) == 0) stop("Individual matchup file not loaded correctly.")
-  
-  # Filter accordingly
-  # NB: This creates the list of valid matchups after screening for spatiotemporal range
-  file_list_clean <- file_list_clean[basename(file_list_clean) %in% match_base_details$file_name]
-
-  # Get sensor name that matches files, not folders
-  if(sensor_X == "HYPERNETS"){
-    sensor_X_col <- "Hyp"
-  } else {
-    sensor_X_col <- sensor_X
-  }
-  var_name_lower <- tolower(var_name)
-
-  # Read all file variances in one go
-  suppressMessages(
-  match_base <- map_dfr(file_list_clean, read_delim, delim = ";", col_types = "ccccnnic")
-  )
-  colnames(match_base)[1] <- "sensor"
-  
-  # Calculate uncertainties per wavelength
-  match_base_sensor <- match_base |> 
-    mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor),
-           var_name = var_name) |>
-    filter(sensor == sensor_X_col) |> 
-    # filter(!(sensor %in% c("Hyp_nosc"))) |> 
-    distinct() |> 
-    dplyr::select(-radiometer_id, -type) |> 
-    # dplyr::select(-day, -time, -latitude, -longitude, -radiometer_id, -type) |> 
-    mutate(data_type = case_when(data_type == var_name_lower ~ "var_value", TRUE ~ data_type)) |> 
-    pivot_longer( cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
-    pivot_wider(names_from = data_type, values_from = value) |>
-    # na.omit() |> 
-    mutate(max_sd_diff = abs(var_value - std_max),
-           min_sd_diff = abs(var_value - std_min),
-           # Max and min should be the same, but this addresses any rounding issues
-           sd = (max_sd_diff + min_sd_diff)/2,
-           cv = sd/var_value,
-           wavelength = as.numeric(wavelength)) |> 
-    filter(var_value > 0)
-
-  # Clean up
-  match_base_res <- match_base_sensor |> 
-    filter(sensor == sensor_X_col, var_name == var_name) |> 
-    distinct() |> 
-    summarise(sd_min = min(sd, na.rm = TRUE),
-              sd_median = median(sd, na.rm = TRUE),
-              sd_mean = mean(sd, na.rm = TRUE),
-              sd_max = max(sd, na.rm = TRUE),
-              cv_min = min(cv, na.rm = TRUE),
-              cv_median = median(cv, na.rm = TRUE),
-              cv_mean = mean(cv, na.rm = TRUE),
-              cv_max = max(cv, na.rm = TRUE), .by = c("sensor", "var_name", "wavelength"))
-  # return(match_base_res)
-  # Save and exit
-  write_csv(match_base_res, file = paste0("output/var_stats_",var_name,"_", sensor_X,".csv"))
-}
-
 
 # Matchup processing ------------------------------------------------------
 
@@ -738,7 +607,7 @@ get_nearest_pixels <- function(df_data, target_lat, target_lon, n_pixels){
 
 # Function that interrogates each matchup file to produce the needed output for all following comparisons
 # file_path <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_S3A/S3A_20240531T101658_vs_HYPERNETS_20240531T100000_RHOW.csv"
-# file_path <- file_list[1]
+# file_path <- file_list[28]
 process_matchup_file <- function(file_path){
 
   # Load the mean data
@@ -769,17 +638,19 @@ process_matchup_file <- function(file_path){
         
         # Melt it for additional stats
         df_sensor_long <- df_sensor_sub |> 
+          # dplyr::select(!(colnames(df_sensor_sub) %in% c("data_type", "dateTime", "longitude", "latitude", "radiometer_id", 
+          #   "pixel_pos", "type", "variability_centered"))) |>
           pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
           mutate(wavelength = as.numeric(wavelength)) |> 
-          # dplyr::select(-dateTime, -longitude, -latitude) |> 
           # pivot_wider(names_from = sensor, values_from = value) |> 
           # filter(wavelength >= 380, wavelength <= 700) |> 
           na.omit()
         
         # Widen for use with stats function
         df_sensor_wide <- df_sensor_long |> 
-          dplyr::select(-dateTime, -longitude, -latitude) |>
-          pivot_wider(names_from = sensor, values_from = value)
+          dplyr::select(-c(dateTime, longitude, latitude)) |>
+          pivot_wider(names_from = sensor, values_from = value) |> 
+          na.omit()
 
         # get vectors
         x_vec <- df_sensor_wide[[sensors[i]]]
@@ -811,7 +682,7 @@ process_matchup_file <- function(file_path){
 }
 
 # Wrapper to be able to multicore across global stats
-process_global_wavelength <- function(matchup_filt, site_name, var_name, sensor_X, sensor_Y){
+process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_Y){
 
   # Filter data
   # matchup_filt <- filter(match_base, wavelength == wavelength_nm)
@@ -847,14 +718,14 @@ process_global_wavelength <- function(matchup_filt, site_name, var_name, sensor_
   # Create data.frame of results and add them to df_results
   df_XY <- df_stats_XY |> 
     mutate(site_name = site_name, 
-           var_name = var_name,
+           var_name = "RHOW",
            sensor_X = sensor_X_name,
            sensor_Y = sensor_Y_name,
           #  Wavelength_nm = wavelength_nm,
            n_w_nm = n_match, .before = "n")
   df_YX <- df_stats_YX |> 
     mutate(site_name = site_name, 
-           var_name = var_name,
+           var_name = "RHOW",
            sensor_X = sensor_Y_name,
            sensor_Y = sensor_X_name,
           #  Wavelength_nm = wavelength_nm,
@@ -868,9 +739,13 @@ process_global_wavelength <- function(matchup_filt, site_name, var_name, sensor_
 }
 
 # Global stats per matchup wavelength
-# site_name = "MAFR"; var_name = "RHOW"; sensor_X = "HYPERNETS"; sensor_Y = "S3A"
-# site_name = "MAFR"; var_name = "RHOW"; sensor_X = "HYPERNETS"; sensor_Y = "S3_all"
-global_stats <- function(site_name, var_name, sensor_X, sensor_Y){
+# site_name = "MAFR"; sensor_Y = "S3A"
+# site_name = "MAFR"; sensor_Y = "S3_all"
+# site_name = "MAFR"; sensor_Y = "PACE"
+# site_name = "MAFR"; sensor_Y = "SNPP"
+# site_name = "MAFR"; sensor_Y = "JPSS1"
+# site_name = "MAFR"; sensor_Y = "AQUA"
+global_stats <- function(site_name, sensor_Y){
   
   # Create multiple folder paths if requested
   if(sensor_Y == "S3_all"){
@@ -883,9 +758,9 @@ global_stats <- function(site_name, var_name, sensor_X, sensor_Y){
   # Continue with satellite versions if necessary
   if(sensor_Y  == "AQUA"){
     sensor_Z <- "MODIS"
-  } else if(sensor_Y %in% c("PACE_V2", "PACE_V30", "PACE_V31")){
+  } else if(sensor_Y == "PACE"){
     sensor_Z <- "OCI"
-  } else if(sensor_Y %in% c("VIIRS_N", "VIIRS_J1", "VIIRS_J2", "VIIRS_all")){
+  } else if(sensor_Y %in% c("SNPP", "JPSS1", "JPSS2", "VIIRS_all")){
     sensor_Z <- "VIIRS"
   } else if(sensor_Y %in% c("S3A", "S3B", "S3_all")){
     sensor_Z <- "OLCI"
@@ -896,17 +771,14 @@ global_stats <- function(site_name, var_name, sensor_X, sensor_Y){
   filestub <- paste0("_",sensor_Z,".csv")
   
   # Correct sensor_X for filtering
-  if(sensor_X == "HYPERNETS"){
-    sensor_X_filt <- "Hyp"
-  } else {
-    sensor_X_filt <- sensor_X
-  }
+  sensor_X <- "HYPERNETS"
+  sensor_X_filt <- "Hyp"
   
   # List all files in directory
   file_list <- list.files(folder_path, pattern = "*.csv", full.names = TRUE)
   
   # Load individual matchup results to filter file list and for further use
-  match_base_details <- read_csv(paste0("output/matchup_stats_",var_name,filestub), show_col_types = FALSE) |> 
+  match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |> 
     dplyr::select(file_name) |> distinct()
   if(nrow(match_base_details) == 0) stop("Individual matchup file not loaded correctly.")
   
@@ -924,7 +796,7 @@ global_stats <- function(site_name, var_name, sensor_X, sensor_Y){
   # Load data
   # match_base <- map_dfr(file_list_no_out, load_matchup_long)
   match_base <- plyr::ldply(file_list_no_out, load_matchup_long, .parallel = TRUE)
-  if(!("wavelength" %in% colnames(match_base))) stop(paste("Wavelength column is missing from", var_name, sensor_X, sensor_Y))
+  if(!("wavelength" %in% colnames(match_base))) stop(paste("Wavelength column is missing from", sensor_X, sensor_Y))
   
   # Melt if S3_all
   if(sensor_Y == "S3_all"){
@@ -935,29 +807,30 @@ global_stats <- function(site_name, var_name, sensor_X, sensor_Y){
   }
   
   # Get pre-determined wavelengths
-  W_nm <- W_nm_out(sensor_Y, var_name)
+  W_nm <- W_nm_out(sensor_Y)
   
   # Filter data.frame accordingly
   match_base_filt <- filter(match_base, wavelength %in% W_nm) #|> 
     # mutate(wavelength_idx = wavelength, .before = wavelength)
 
   # Get the requested wavelengths global stats, add matchup count, and exit
-  doParallel::registerDoParallel(cores = 8)
-  # df_results <- plyr::ldply(W_nm, process_global_wavelength, .parallel = TRUE,
-  #                           match_base = match_base, var_name = var_name, sensor_X = sensor_X, sensor_Y = sensor_Y) |> 
+  # doParallel::registerDoParallel(cores = 14)
   df_results <- plyr::ddply(match_base_filt, c("wavelength"), process_global_wavelength, .parallel = TRUE,
-                            site_name = site_name, var_name = var_name, sensor_X = sensor_X, sensor_Y = sensor_Y, .drop = FALSE) |> 
+                            site_name = site_name, sensor_X = sensor_X, sensor_Y = sensor_Y, .drop = FALSE) |> 
     mutate(n_clean = length(file_list_clean),
            n_no_out = length(file_list_no_out),
            .before = "n_w_nm") |> 
-    dplyr::select(site_name, var_name, sensor_X, sensor_Y, wavelength, everything())
+    dplyr::select(site_name, sensor_X, sensor_Y, wavelength, everything())
   return(df_results)
 }
 
 # Function that runs this over all matchup files in a directory
-# site_name = "MAFR"; var_name = "RHOW"; sensor_X = "HYPERNETS"; sensor_Y = "S3A"
-# site_name = "MAFR"; var_name = "RHOW"; sensor_X = "HYPERNETS"; sensor_Y = "S3B"
-process_matchup_folder <- function(site_name, var_name, sensor_X, sensor_Y){
+# site_name = "MAFR"; sensor_Y = "S3A"
+# site_name = "MAFR"; sensor_Y = "SNPP"
+# site_name = "MAFR"; sensor_Y = "JPSS1"
+# site_name = "MAFR"; sensor_Y = "PACE"
+# site_name = "MAFR"; sensor_Y = "AQUA"
+process_matchup_folder <- function(site_name, sensor_Y){
   
   # Create file path
   folder_path <- file_path_build(site_name, sensor_Y)
@@ -969,7 +842,7 @@ process_matchup_folder <- function(site_name, var_name, sensor_X, sensor_Y){
   file_list <- file_list[!grepl("all|global", file_list)]
   
   # Initialise results data.frame
-  doParallel::registerDoParallel(cores = 8)
+  # doParallel::registerDoParallel(cores = 12)
   df_results <- plyr::ldply(file_list, process_matchup_file, .parallel = TRUE)
   # plan(multicore, workers = 14, seed=TRUE) # Already called on multi-core in parent function
   # df_results <- future_map_dfr(file_list, process_matchup_file, .options = furrr_options(seed = TRUE))
@@ -980,7 +853,7 @@ process_matchup_folder <- function(site_name, var_name, sensor_X, sensor_Y){
 }
 
 # Process multiple folders based on request
-# sensor_Z = "OLCI"; stat_choice = "matchup"
+# sensor_Z = "MODIS"; stat_choice = "matchup"
 # sensor_Z = "OLCI"; stat_choice = "global"
 process_sensor <- function(sensor_Z, stat_choice = "matchup"){
   
@@ -989,9 +862,7 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup"){
   
   # Add S3_all if needed
   if(sensor_Z == "OLCI" & stat_choice == "global"){
-    ply_grid_bonus <- data.frame(site_name = unique(ply_grid$site_name), 
-                                 var_name = unique(ply_grid$var_name),
-                                 sensor_X = unique(ply_grid$sensor_X),
+    ply_grid_bonus <- data.frame(site_name = unique(ply_grid$site_name),
                                  sensor_Y = "S3_all")
     ply_grid <- rbind(ply_grid, ply_grid_bonus)
     message("Added S3_all to sensor_Y list")
@@ -1030,15 +901,15 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup"){
 # Plotting functions ------------------------------------------------------
 
 # Plot data based on wavelength group
-plot_matchup_nm <- function(df, var_name, x_sensor, y_sensor){
-  df |> 
+plot_matchup_nm <- function(df, x_sensor, y_sensor){
+  df |>
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = wavelength_group)) +
+    geom_point(aes(colour = as.factor(wavelength))) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    labs(title = paste(var_name,"-", x_sensor, "vs", y_sensor),
-         x = paste(var_name, x_sensor),
-         y = paste(var_name, y_sensor),
+    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
+         x = paste("RHOW", x_sensor),
+         y = paste("RHOW", y_sensor),
          colour = "Wavelength (nm)") +
     scale_colour_manual(values = colour_nm_func(y_sensor))  +
     theme_minimal() +
@@ -1047,16 +918,16 @@ plot_matchup_nm <- function(df, var_name, x_sensor, y_sensor){
 }
 
 # Plot based on date of collection
-plot_matchup_date <- function(df, var_name, x_sensor, y_sensor){
-  df |> 
+plot_matchup_date <- function(df, x_sensor, y_sensor){
+  df |>
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
-    mutate(date = as.factor(as.Date(dateTime_X))) |> 
+    mutate(date = as.factor(as.Date(dateTime_X))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = date)) +
+    geom_point(aes(colour = date), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    labs(title = paste(var_name,"-", x_sensor, "vs", y_sensor),
-         x = paste(var_name, x_sensor),
-         y = paste(var_name, y_sensor),
+    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
+         x = paste("RHOW", x_sensor),
+         y = paste("RHOW", y_sensor),
          colour = "date") +
     # scale_colour_brewer(palette = "Dark2")  +
     theme_minimal() +
@@ -1065,17 +936,17 @@ plot_matchup_date <- function(df, var_name, x_sensor, y_sensor){
 }
 
 # Plot based on dateTime of collection
-plot_matchup_dateTime <- function(df, var_name, x_sensor, y_sensor, date_filter){
-  df |> 
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |> 
-    mutate(date = as.Date(dateTime_X)) |> 
+plot_matchup_dateTime <- function(df, x_sensor, y_sensor, date_filter){
+  df |>
+    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
+    mutate(date = as.Date(dateTime_X)) |>
     filter(date == as.Date(date_filter)) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
     geom_point(aes(colour = dateTime_X)) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    labs(title = paste(var_name,"-", x_sensor, "vs", y_sensor,"-", date_filter),
-         x = paste(var_name, x_sensor),
-         y = paste(var_name, y_sensor),
+    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"-", date_filter),
+         x = paste("RHOW", x_sensor),
+         y = paste("RHOW", y_sensor),
          colour = "time (UTC)") +
     theme_minimal() +
     theme(panel.border = element_rect(fill = NA, color = "black"),
@@ -1083,29 +954,29 @@ plot_matchup_dateTime <- function(df, var_name, x_sensor, y_sensor, date_filter)
 }
 
 # Plot scatterplot based on the MAPE values of each comparison
-plot_matchup_Error_Bias <- function(df, var_name, x_sensor, y_sensor){
-  pl_Error <- df |> 
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |> 
+plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
+  pl_Error <- df |>
+    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
     geom_point(aes(colour = Error_50)) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     scale_colour_viridis_c(option = "D") +
-    labs(title = paste(var_name,"-", x_sensor, "vs", y_sensor,"- Error"),
-         x = paste(var_name, x_sensor),
-         y = paste(var_name, y_sensor),
+    labs(title = paste(x_sensor, "vs", y_sensor,"- Error"),
+         x = paste(x_sensor),
+         y = paste(y_sensor),
          colour = "Error [%]") +
     theme_minimal() +
     theme(panel.border = element_rect(fill = NA, color = "black"),
           legend.position = "bottom")
   pl_Bias <- df |>
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |> 
+    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
     geom_point(aes(colour = Bias_50)) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     scale_colour_viridis_c(option = "A") +
-    labs(title = paste(var_name,"-", x_sensor, "vs", y_sensor,"- Bias"),
-         x = paste(var_name, x_sensor),
-         y = paste(var_name, y_sensor),
+    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"- Bias"),
+         x = paste("RHOW", x_sensor),
+         y = paste("RHOW", y_sensor),
          colour = "Bias [%]") +
     theme_minimal() +
     theme(panel.border = element_rect(fill = NA, color = "black"),
@@ -1114,43 +985,43 @@ plot_matchup_Error_Bias <- function(df, var_name, x_sensor, y_sensor){
 }
 
 # Plot the relationship between difftime and distance for MAPE and bias for all variables
-# df = matchup_ED_in_situ; var_name = "ED"
-plot_matchup_scatter <- function(df, var_name, pl_height = 6, pl_width = 9){
-  
+# df = matchup_ED_in_situ
+plot_matchup_scatter <- function(df, pl_height = 6, pl_width = 9){
+
   # Relationship between MAPE, distance and difftime
-  pl_Error <- df |> 
-    mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y)) |> 
-    filter(comp_sensors %in% c("Hyp vs TRIOS", "Hyp vs HYPERPRO", "TRIOS vs HYPERPRO")) |> 
+  pl_Error <- df |>
+    mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y)) |>
+    filter(comp_sensors %in% c("Hyp vs TRIOS", "Hyp vs HYPERPRO", "TRIOS vs HYPERPRO")) |>
     ggplot(aes(x = diff_time, y = Error)) +
     geom_point(aes(colour = dist), size = 3, alpha = 0.7) +
     geom_smooth(method = "lm", se = FALSE) +
     scale_colour_viridis_c() +
     labs(x = "Time difference [minutes]", y = "Error [%]", colour = "Distance\n[km]",
-         title = paste0(var_name," - Error (%) : Effect of sampling time difference"),
+         title = "RHOW - Error (%) : Effect of sampling time difference",
          subtitle = "Colour shows distance (km) between samples") +
     facet_wrap(~comp_sensors) +
-    theme(panel.border = element_rect(colour = "black"))#, 
+    theme(panel.border = element_rect(colour = "black"))#,
   # legend.position = "bottom")
   # pl_Error
-  
+
   # The same but for bias
-  pl_Bias <- df |> 
-    mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y)) |> 
-    filter(comp_sensors %in% c("Hyp vs TRIOS", "Hyp vs HYPERPRO", "TRIOS vs HYPERPRO")) |> 
+  pl_Bias <- df |>
+    mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y)) |>
+    filter(comp_sensors %in% c("Hyp vs TRIOS", "Hyp vs HYPERPRO", "TRIOS vs HYPERPRO")) |>
     ggplot(aes(x = diff_time, y = Bias)) +
     geom_point(aes(colour = dist), size = 3, alpha = 0.7) +
     geom_smooth(method = "lm", se = FALSE) +
     scale_colour_viridis_c() +
     labs(x = "Time difference [minutes]", y = "Bias [%]", colour = "Distance\n[km]",
-         title = paste0(var_name," - Bias (%) : Effect of sampling time difference"),
+         title = "RHOW - Bias (%) : Effect of sampling time difference",
          subtitle = "Colour shows distance (km) between samples") +
     facet_wrap(~comp_sensors) +
-    theme(panel.border = element_rect(colour = "black"))#, 
+    theme(panel.border = element_rect(colour = "black"))#,
   # legend.position = "bottom")
   # pl_Bias
-  
+
   pl_combi <- ggpubr::ggarrange(pl_Error, pl_Bias, nrow = 2, ncol = 1)
-  ggsave(paste0("figures/outliers_",var_name,"_in_situ.png"), pl_combi, height = pl_height, width = pl_width)
+  ggsave("figures/outliers_RHOW_in_situ.png", pl_combi, height = pl_height, width = pl_width)
   # pl_combi
 }
 
@@ -1179,11 +1050,11 @@ pretty_label_func <- function(char_string){
     sensor_lab <- "PACE v3.0"
   } else if(char_string == "PACE_V31"){
     sensor_lab <- "PACE v3.1"
-  } else if(char_string == "VIIRS_N"){
+  } else if(char_string == "SNPP"){
     sensor_lab <- "SNPP"
-  } else if(char_string == "VIIRS_J1"){
+  } else if(char_string == "JPSS1"){
     sensor_lab <- "JPSS1"
-  } else if(char_string == "VIIRS_J2"){
+  } else if(char_string == "JPSS2"){
     sensor_lab <- "JPSS2"
   }
   
@@ -1302,7 +1173,7 @@ plot_matchup_single_nm <- function(df, sensor_X, sensor_Y){
 }
 
 # Plot data based on wavelength group
-# df <- match_filter; sensor_Y <- "S3A"
+# df <- match_filter; sensor_Y <- "PACE"
 plot_global_nm <- function(df, sensor_Y){
   
   # Create sensor and unit labels
@@ -1353,24 +1224,46 @@ plot_global_nm <- function(df, sensor_Y){
   # n_files <- length(unique(df_prep$file_name))
 
   # Set alpha
-  if(sensor_Y %in% c("PACE_V2", "PACE_V30", "PACE_V31", "HYPERPRO", "TRIOS", "HYPERNETS")){
+  if(sensor_Y == "PACE"){
     point_alpha <- 0.3
   } else {
     point_alpha <- 0.9
   }
   
   # Get pre-determined wavelengths
-  if(sensor_Y %in% c("PACE_V2", "PACE_V30", "PACE_V31")){
-    W_nm <- c(380, 400, 412, 443, 490, 510, 560, 620, 673, 700, 885, 1050)
+  # NB: For the moment using all wavelengths for PACE for the plot
+  # if(sensor_Y == "PACE"){
+    # W_nm <- c(380, 400, 412, 443, 490, 510, 560, 620, 673, 700, 885, 1050)
+  # } else {
+    W_nm <- W_nm_out(sensor_Y)
+  # }
+
+  # Cut PACE colour bands to match colour labels
+  if(sensor_Y == "PACE"){
+    df_prep <- df_prep |> 
+      mutate(wavelength = cut(wavelength,
+                                          breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 
+                                                     800, 900, 1050),
+                                          labels = names(colours_nm),
+                                  include.lowest = TRUE, right = TRUE), .after = "wavelength")
+  }
+
+  # Determine rows for legend items
+  if(sensor_Y %in% c("PACE", "S3A", "S3B", "S3", "S3_all")){
+    legend_rows <- 3
   } else {
-    W_nm <- W_nm_out(sensor_Y, "RHOW")
+    legend_rows <- 2
   }
 
   # Filter dataframe to only plot linear models for chosen wavebands
+  if(!(sensor_Y == "PACE")){
   df_sub <- filter(df_prep, wavelength %in% W_nm) |> 
     mutate(wavelength = factor(wavelength,
                                levels = sort(unique(wavelength))))
-  
+  } else {
+    df_sub <- df_prep
+  }
+
   # Plot
   if(sensor_Y == "S3"){
     pl_base <- ggplot(data = df_sub, 
@@ -1382,7 +1275,7 @@ plot_global_nm <- function(df, sensor_Y){
     pl_base <- ggplot(data = df_sub, 
                       aes_string(x = sensor_X_labs$sensor_col, y = sensor_Y_labs$sensor_col)) +
       geom_point(aes(colour = wavelength), alpha = point_alpha) +
-            scale_colour_manual(values = colours_nm) +
+      scale_colour_manual(values = colours_nm) +
       facet_wrap(~site_name)
   }
   pl_clean <- pl_base +
@@ -1418,7 +1311,7 @@ plot_global_nm <- function(df, sensor_Y){
          y = paste0(sensor_Y_labs$sensor_lab,"; ", var_labs$units_lab),
          colour = "Wavelength (nm)") +
     # scale_colour_manual(values = colours_nm) +
-    guides(colour = guide_legend(nrow = 2, override.aes = list(alpha = 1.0, size = 3))) +
+    guides(colour = guide_legend(nrow = legend_rows, override.aes = list(alpha = 1.0, size = 3))) +
     coord_fixed(xlim = c(0, max_axis), ylim = c(0, max_axis)) +
     theme_minimal() +
     theme(panel.border = element_rect(fill = NA, color = "black"),
@@ -1434,16 +1327,18 @@ plot_global_nm <- function(df, sensor_Y){
 }
 
 # Takes variable and Y sensor as input to automagically create global scatterplot triptych
-# sensor_Y = "S3A"#; panel_labels <- c("a)"); cut_legend = "no"
-# sensor_Y = "S3"
-global_scatterplot <- function(sensor_Y){#, panel_labels = "", cut_legend = "no"){
+# cut_legend = "cut" strips the legend so several panels can be stacked under one shared legend
+# sensor_Y = "S3B"; cut_legend = "cut"
+# sensor_Y = "S3"; cut_legend = "no"
+# sensor_Y = "PACE"; cut_legend = "no"
+global_scatterplot <- function(sensor_Y, cut_legend = "no"){
 
   # Continue with satellite versions if necessary
   if(sensor_Y  == "AQUA"){
     sensor_Z <- "MODIS"
-  } else if(sensor_Y %in% c("PACE_V2", "PACE_V30", "PACE_V31")){
+  } else if(sensor_Y %in% c("PACE")){
     sensor_Z <- "OCI"
-  } else if(sensor_Y %in% c("VIIRS_N", "VIIRS_J1", "VIIRS_J2", "VIIRS_all")){
+  } else if(sensor_Y %in% c("SNPP", "JPSS1", "JPSS2")){
     sensor_Z <- "VIIRS"
   } else if(sensor_Y %in% c("S3A", "S3B", "S3")){
     sensor_Z <- "OLCI"
@@ -1481,81 +1376,49 @@ global_scatterplot <- function(sensor_Y){#, panel_labels = "", cut_legend = "no"
   # match_filter <- match_base[!match_base$file_name %in% outliers_all$file_name,]
   match_filter <- match_base
 
-  # Create the three figures
+  # Remove any erroneuosly high values before plotting
+  match_filter <- match_filter |> filter(Hyp <= 1)
+
+  # Create the figure
   print("Creating figure, saving, and exiting")
   match_fig <- plot_global_nm(match_filter, sensor_Y)
-  # TODO: Programmatically determine width and height based on sensor_Z
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 9, height = 9)
+
+  # Save the individual figure
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 5, height = 5)
+
+  # Remove the legend when this panel will be stacked beneath another with a shared legend
+  # Then return it (invisibly) for reuse by global_scatterplot_stack()
+  if(cut_legend == "cut") match_fig <- match_fig + theme(legend.position = "none")
+  invisible(match_fig)
 }
 
-# TODO: Add scatterplot_stack back into workflow once other satellite products are added
-# Stack the triptych output as required
-# sensor_Z = "OLCI"
+# Stack the per-sensor global scatterplots for a sensor family into one composite figure
+# NB: Requires that the matchup and global stats CSVs for sensor_Z already exist (see process_sensor())
+# sensor_Z = "OCI"
 global_scatterplot_stack <- function(sensor_Z){
-  
-  # Create ply grid
-  ply_grid <- sensor_grid(var_name, sensor_Z) |> 
-    dplyr::select(var_name, sensor_Y) |> distinct()
-  
-  # Get sensor variant count
-  sensor_count <- length(unique(ply_grid$sensor_Y))
 
-  # Create figures
-  if(var_name != "RHOW"){
-    fig_a <- global_scatterplot("ED", "HYPERPRO", cut_legend = "cut", panel_labels = c("a)", "b)", "c)"))
-    fig_b <- global_scatterplot("LU", "HYPERPRO", cut_legend = "cut")
-    fig_c <- global_scatterplot("LD", "HYPERPRO", cut_legend = "cut")
-    fig_d <- global_scatterplot("LW", "HYPERPRO", cut_legend = "cut", panel_labels = c("f)", "g)", "h)"))
-    fig_legend <- global_scatterplot("ED", "HYPERPRO", cut_legend = "extract")
-    # fig_legend_bottom <- cowplot::get_legend(fig_legend)
-    
-    # Combine into special layout
-    fig_mid <- ggpubr::ggarrange(fig_b, fig_c, ncol = 2, nrow = 1, 
-                                 labels = c("d)", "e)"), hjust = c(-4.7, -5.4), vjust = c(0.5, 0.5))
-    fig_stack <- ggpubr::ggarrange(fig_a, fig_mid, fig_d, ncol = 1, nrow = 3, 
-                                   # labels = c("a)", "", "d)"), hjust = c(-2.2, 0, -1.5), 
-                                   heights = c(1.0, 0.84, 0.90),
-                                   legend.grob = fig_legend,
-                                   common.legend = TRUE, legend = "bottom") + 
-      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-    ggsave(paste0("figures/global_scatter_OTHER_in_situ.png"), fig_stack, width = 11, height = 12)
-  } else if(sensor_Z == "HYPERPRO"){
-    fig_stack <- global_scatterplot("RHOW", "HYPERPRO", panel_labels = c("a)", "b)", "c)")) + 
-      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-    ggsave(paste0("figures/global_scatter_",var_name,"_in_situ.png"), fig_stack, width = 12, height = 4.5)
-    # TODO: Optimise this logic gate to make this decision automagically
-  } else if(sensor_Z == "OLCI"){
-    fig_stack <- global_scatterplot("RHOW", "S3", panel_labels = c("a)", "b)", "c)")) + 
-      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-    ggsave(paste0("figures/global_scatter_",var_name,"_OLCI.png"), fig_stack, width = 12, height = 4.5)
-  } else if(sensor_count == 1){
-    fig_stack <- global_scatterplot(var_name, ply_grid$sensor_Y[1], panel_labels = c("a)", "b)", "c)")) + 
-      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-    ggsave(paste0("figures/global_scatter_",var_name,"_",sensor_Z,".png"), fig_stack, width = 12, height = 4.5)
-  } else if(sensor_count == 2){
-    fig_a <- global_scatterplot(var_name, ply_grid$sensor_Y[1], cut_legend = "cut", panel_labels = c("a)", "b)", "c)"))
-    fig_b <- global_scatterplot(var_name, ply_grid$sensor_Y[2], panel_labels = c("d)", "e)", "f)"))
-    fig_stack <- ggpubr::ggarrange(fig_a, fig_b, ncol = 1, nrow = sensor_count, 
-                                   # labels = c("a)", "b)"), 
-                                   heights = c(1, 1.14)) + 
-      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-    # fig_stack <- fig_a / fig_b + plot_layout(guides = "collect") &
-    #   theme(legend.position = "bottom") #+ 
-      # plot_annotation(tag_levels = "a", tag_suffix = ")")
-    # fig_stack +
-    #   annotate("text", x = -Inf, y = Inf, label = "a)", vjust = 0, hjust = -2) +
-    #   annotate("text", x = -Inf, y = Inf, label = "b)", vjust = 0, hjust = 5) #+
-      # annotate("text", x = -Inf, y = Inf, label = "c)", vjust = 2, hjust = 1.2)
-    ggsave(paste0("figures/global_scatter_",var_name,"_",sensor_Z,".png"), fig_stack, width = 12, height = 9)
-  } else if(sensor_count == 3){
-    fig_a <- global_scatterplot(var_name, ply_grid$sensor_Y[1], cut_legend = "cut", panel_labels = c("a)", "b)", "c)"))
-    fig_b <- global_scatterplot(var_name, ply_grid$sensor_Y[2], cut_legend = "cut", panel_labels = c("d)", "e)", "f)"))
-    fig_c <- global_scatterplot(var_name, ply_grid$sensor_Y[3], panel_labels = c("h)", "i)", "j)"))
-    fig_stack <- ggpubr::ggarrange(fig_a, fig_b, fig_c, ncol = 1, nrow = sensor_count, 
-                                   # labels = c("a)", "b)", "c)"), 
-                                   heights = c(1, 1, 1.13)) + 
-      ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-    ggsave(paste0("figures/global_scatter_",var_name,"_",sensor_Z,".png"), fig_stack, width = 12, height = 13)
+  # Get the sensor_Y platforms that belong to this sensor family
+  sensor_Y_list <- sensor_grid(sensor_Z)$sensor_Y
+  # NB: Disabling S3 all for the moment
+  # if(sensor_Z == "OLCI"){ 
+  #   sensor_Y_list <- c("S3A", "S3B", "S3")
+  #   print("Added S3 to Sat names")
+  # }
+  sensor_count <- length(sensor_Y_list)
+
+  # Build one panel per platform
+  # NB: The legend is cut from every panel but the last so it appears once, at the bottom of the stack
+  fig_list <- vector("list", sensor_count)
+  for(i in seq_len(sensor_count)){
+    fig_list[[i]] <- global_scatterplot(sensor_Y_list[i], cut_legend = ifelse(i < sensor_count, "cut", "no"))
   }
+
+  # Give the legend-bearing (last) panel extra relative height to fit the legend
+  panel_heights <- c(rep(1, sensor_count - 1), 1.15)
+
+  # Stack panels vertically and exit
+  fig_stack <- ggpubr::ggarrange(plotlist = fig_list, ncol = 1, nrow = sensor_count, heights = panel_heights) +
+    ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 5, height = 5 * sensor_count)
 }
 
