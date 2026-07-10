@@ -1,10 +1,14 @@
-# code/figures.R
+# code/5_figures.R
 # It does what it says on the tin
+#
+# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
+#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
+# (renamed 2026-07-10 from code/figures.R -- see manuscript/track-changes.md)
 
 
 # Setup -------------------------------------------------------------------
 
-source("code/functions.R")
+source("code/0_functions.r")
 
 # For tailor diagrams
 # library(openair)
@@ -700,4 +704,87 @@ pl_Bias_OCI <- ggplot(data = global_stats_OCI_pretty, aes(x = `Wavelength (nm)`,
 # Steek'em
 fig_S2 <- pl_Error_OCI / pl_Bias_OCI + plot_annotation(tag_levels = "a", tag_suffix = ")")
 ggsave("figures/fig_S2.png", fig_S2, width = 9, height = 12)
+
+
+# ==========================================================================
+# MAFR/THAU manuscript figure placeholders (added 2026-07-10)
+# ==========================================================================
+# Everything above this line is either (a) generic/reusable (the global
+# scatterplot stack section) or (b) legacy Tara-cruise-specific code (Figure 1
+# station map, Figure 3/4 hyperspectral comparison, Figure 11 error matrix,
+# Fig S1/S2 PACE version comparisons) that depended on Tara vessel-track GPS
+# files, HyperPRO/So-Rad in situ platforms, and Tara file paths that do not
+# apply to the MAFR/THAU fixed-station manuscript. The sections below are
+# placeholders for MAFR/THAU-appropriate replacements; none are runnable yet
+# (they need real MAFR/THAU coordinate and matchup data structures to be
+# finalised first) but are stubbed out so the intended figure list and
+# function signatures are visible and easy to fill in together.
+
+
+## Figure 1 (replacement) -- static MAFR/THAU station map -------------------
+# TODO: replace the Tara-cruise-track "Figure 1" above with a static map showing
+# the fixed MAFR and (once available) THAU station locations only -- no vessel
+# track needed since these are fixed platforms, unlike the Tara mobile deployment.
+# Needs: station lon/lat for MAFR (and THAU once its data folder exists), ideally
+# pulled directly from the HYPERNETS L1C .nc global attributes via
+# load_HYPERNETS_coords() rather than a Tara GPS track file.
+#
+# plot_station_map_FR <- function(site_names = available_sites("S3A")){
+#   # 1. For each site in site_names, get a representative station lon/lat
+#   #    (e.g. via load_HYPERNETS_coords() on one L1C .nc file per site, or a
+#   #    fixed lookup table if the .nc files aren't locally convenient).
+#   # 2. Plot both sites on one map (annotation_borders() + geom_point()),
+#   #    labelled by site_name, ideally with an inset/zoom per site given the
+#   #    very different geographic scales of a lagoon vs an estuary mouth.
+#   # 3. Optionally underlay a representative satellite RGB or turbidity/rhow
+#   #    band (as the old Figure 1 did with a MODIS band 3 tile) per site to
+#   #    visually communicate the clear (THAU) vs turbid (MAFR) contrast.
+#   stop("plot_station_map_FR() not yet implemented -- placeholder only")
+# }
+# ggsave("figures/fig_1_station_map.png", plot_station_map_FR(), height = 8, width = 12)
+
+
+## Figure (replacement) -- generalised error/bias heatmap across sensors ----
+# TODO: adapt plot_matrix_error() (defined above, Figure 11 section) for the
+# MAFR/THAU case. The original faceted on sensor_X (HyperPRO/So-Rad/HYPERNETS
+# in situ platforms from the Tara cruise); this manuscript only has one in situ
+# platform (HYPERNETS), so the natural facet dimensions become site_name (MAFR
+# vs THAU) x sensor_sat (MODIS/VIIRS/OLCI/OCI), read directly from
+# output/global_stats_all.csv (already site-aware once THAU data are processed).
+#
+# plot_matrix_error_FR <- function(df, val_range = c(0, 40)){
+#   # Same core geom_tile() + geom_label() heatmap logic as plot_matrix_error(),
+#   # but facet_grid(sensor_sat ~ site_name) instead of facet_grid(sensor_sat ~ sensor_X),
+#   # since sensor_X is always HYPERNETS here. Reuse colour_nm_func()/pretty_label_func()
+#   # for consistent labelling with the rest of the figure set.
+#   stop("plot_matrix_error_FR() not yet implemented -- placeholder only")
+# }
+# fig_error_matrix_FR <- plot_matrix_error_FR(read_csv("output/global_stats_all.csv", show_col_types = FALSE))
+# ggsave("figures/fig_error_matrix_MAFR_THAU.png", fig_error_matrix_FR, width = 10, height = 8)
+
+
+## Figure (replacement) -- hyperspectral vs multispectral comparison --------
+# TODO: adapt the Tara Figure 3/4 "single matchup" hyperspectral-vs-satellite
+# comparison (pro_all_long / plot_matchup_single_nm()) for MAFR/THAU. The Tara
+# version stacked HyperPRO, So-Rad, HYPERNETS, PACE, and VIIRS SNPP for one
+# chosen synchronous matchup date; MAFR/THAU only has HYPERNETS as the in situ
+# hyperspectral reference, so this becomes: HYPERNETS full spectrum (continuous
+# line) overlaid with each satellite's band-equivalent Rhow (points + error
+# bars from std_min/std_max, as already done for VIIRS in plot_matchup_single_nm())
+# for one well-matched, low-CV date at MAFR and one at THAU, to visually motivate
+# the value of hyperspectral in situ reference data against multispectral (VIIRS,
+# MODIS, OLCI) and hyperspectral (PACE) satellite products alike.
+#
+# plot_hyperspectral_comparison_FR <- function(site_name, match_date){
+#   # 1. For the given site_name and match_date, load the matching HYPERNETS vs
+#   #    <sensor> RHOW files (one load_matchup_long() call per sensor family)
+#   #    for the same date, matching plot_matchup_single_nm()'s existing pattern.
+#   # 2. Combine into one long data.frame keyed by sensor label (as pro_all_long
+#   #    does above), then reuse the pl_spect-style ggplot() from Figure 3.
+#   # 3. Drop the HYPERNETS photo panels (Ld/Lu/Ed/Sun jpgs) from Figure 3's
+#   #    bottom row unless equivalent MAFR/THAU images are available and desired.
+#   stop("plot_hyperspectral_comparison_FR() not yet implemented -- placeholder only")
+# }
+# fig_hyperspectral_MAFR <- plot_hyperspectral_comparison_FR("MAFR", match_date = NA) # TODO: choose a representative low-CV date
+# ggsave("figures/fig_hyperspectral_comparison_MAFR.png", fig_hyperspectral_MAFR, width = 12, height = 9)
 

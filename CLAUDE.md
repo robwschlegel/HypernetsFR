@@ -4,9 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repository analyses match-up data from the HYPERNETS in-water radiometry stations in France (site: MAFR), comparing HYPERNETS-derived water-leaving reflectance (RHOW / ρw) against satellite ocean-colour sensors (currently Sentinel-3 OLCI: S3A/S3B; MODIS-Aqua, VIIRS, and PACE-OCI are stubbed but not yet wired in). It produces validation statistics and scatterplot figures for a related publication.
+This repository analyses match-up data from the HYPERNETS in-water radiometry station(s) in France, comparing HYPERNETS-derived water-leaving reflectance (RHOW / ρw) against satellite ocean-colour sensors. **All four sensor families are wired end-to-end and have populated `output/`/`figures/`**: Sentinel-3 OLCI (S3A/S3B), MODIS-Aqua (AQUA), VIIRS (SNPP/JPSS1/JPSS2), and PACE-OCI (PACE). See `sensor_grid()` in `code/0_functions.r` for the authoritative sensor_Z → sensor_Y mapping.
 
-This is a plain collection of R scripts (no package structure, no `DESCRIPTION`/`renv.lock`, no test suite). Run scripts interactively/line-by-line in R or RStudio from the repository root — several sections are commented-out exploratory/diagnostic code left in place intentionally (e.g. per-sensor blocks in `code/outliers.R`, ad hoc checks in `code/matchups.R`).
+**Site:** currently **MAFR** (Gironde Estuary mouth — highly turbid) only. **THAU** (a lagoon — clear-water comparison site to MAFR) is planned and expected soon; its match-up data are not yet delivered, but the code (`sensor_grid()`, `global_scatterplot()`) auto-detects a `THAU` data folder via `available_sites()` and will pick it up with no further code changes once it exists on disk.
+
+This is a plain collection of R scripts (no package structure, no `DESCRIPTION`/`renv.lock`, no test suite), **numbered by pipeline run order** (`0_functions.r`, `1_matchups_single.R`, `2_outliers.R`, `3_sensitivity.R`, `4_matchups_global.R`, `5_figures.R` — renamed 2026-07-10 from the previous `functions.R`/`matchups.R`/`outliers.R`/`figures.R`, see `manuscript/track-changes.md`). Run scripts interactively/line-by-line in R, RStudio, or Positron from the repository root — several sections are commented-out exploratory/diagnostic code left in place intentionally (e.g. ad hoc checks at the end of `code/4_matchups_global.R`).
+
+## Manuscript context
+
+This codebase supports a manuscript targeting *Frontiers in Remote Sensing*, in the same Research Topic as its scientific/site precursor, **Doxaran et al. 2024** ("Validation of satellite-derived water-leaving reflectance in contrasted French coastal waters based on HYPERNETS field measurements", doi:10.3389/frsen.2023.1290110), which validated HYPERNETS at Berre lagoon (moderately turbid) and the Gironde Estuary/MAFR (highly turbid) against S2-MSI, L8/9-OLI, S3-OLCI, and Aqua-MODIS with multiple atmospheric-correction algorithms. This project reuses Doxaran et al. 2024's **site-contrast framing** (turbid MAFR vs. clear-water THAU, replacing their Berre lagoon site) but adopts the richer **statistical/technical methodology** (`base_stats()`'s Model II/SMA regression, Pahlevan-style log-space Bias/Error, MRD/MARD) developed in a separate, unpublished "in review" manuscript (Schlegel et al., working title "Hyperspectral field and satellite radiometric matchups in oligotrophic waters") describing a moving-vessel Tara HyperBOOST campaign — that paper is a technical/methods precursor only, not a site precursor (it studies oligotrophic open-ocean water, not French coastal sites). See `manuscript/roadmap.md` for the full literature synthesis and step-by-step plan, and `manuscript/track-changes.md` for a running log of repo changes made while developing this manuscript.
 
 ## Data dependency
 
@@ -16,55 +22,56 @@ The raw match-up `.csv`/`.sql` files this code reads are **not stored in this re
 ~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/<site_name>/RHOW_HYPERNETS_vs_<sat_name>/
 ```
 
-(built by `file_path_build()` in `code/functions.R`). Some functions/scripts also reference sibling project paths like `~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/...` and `~/HypernetsTara/output` from related analyses — these are left over from a sibling repo and only apply to specific (often commented-out) code paths. Running the full pipeline requires this external data to be present locally; it cannot be reconstructed from this repo alone.
+(built by `file_path_build()` in `code/0_functions.r`). Some functions/scripts also reference sibling project paths like `~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/...` and `~/HypernetsTara/output` from related analyses — these are left over from a sibling repo and only apply to specific (often commented-out) code paths. Running the full pipeline requires this external data to be present locally; it cannot be reconstructed from this repo alone.
 
 ## Running the code
 
-No build/lint/test commands — this is exploratory analysis code executed with `Rscript` or interactively. Typical entry point:
+No build/lint/test commands — this is exploratory analysis code executed with `Rscript` or interactively. Source the six scripts in numbered order from the repository root:
 
 ```r
-source("code/matchups.R")
-```
-
-which in turn sources `code/functions.R` and `code/outliers.R`. To generate figures:
-
-```r
-source("code/figures.R")
+source("code/0_functions.r")        # shared library -- always first
+source("code/1_matchups_single.R")  # per-file matchup stats
+source("code/2_outliers.R")         # outlier screening -> meta/satellite_outliers.csv
+source("code/3_sensitivity.R")      # matchup-protocol sensitivity checks (optional but recommended)
+source("code/4_matchups_global.R")  # per-wavelength global stats -> output/global_stats_*.csv
+source("code/5_figures.R")          # final figures -> figures/
 ```
 
 All scripts assume the working directory is the repository root (paths like `"output/..."`, `"meta/..."`, `"figures/..."` are relative).
 
 ## Pipeline order
 
-The scripts have a strict run order, driven by file dependencies (later stages read `.csv` outputs written by earlier stages):
+The scripts are **numbered by run order** (renamed 2026-07-10 from `functions.R`/`matchups.R`/`outliers.R`/`figures.R` — see `manuscript/track-changes.md`), driven by file dependencies (later stages read `.csv` outputs written by earlier stages):
 
-1. **`code/functions.R`** — shared library, sourced by everything else. Never run standalone.
-2. **`code/matchups.R`** — orchestrates the pipeline:
-   - `process_sensor(sensor_Z)` in matchup mode: computes per-file match-up stats → `output/matchup_stats_RHOW_<sensor_Z>.csv` and `output/matchup_noQC_stats_RHOW_<sensor_Z>.csv` (files failing the time/distance QC gate).
-   - `source("code/outliers.R")`: **must run after** the matchup-mode stats above and **before** global stats, because it reads `output/matchup_stats_RHOW_<sensor_Z>.csv` and writes `meta/satellite_outliers.csv`, which the global-stats step filters against.
-   - `process_sensor(sensor_Z, "global")`: aggregates match-ups per wavelength → `output/global_stats_RHOW_<sensor_Z>.csv`, combined into `output/global_stats_all.csv`.
-3. **`code/outliers.R`** — semi-manual outlier screening. Only the OLCI (`S3`) section is active; MODIS/VIIRS/OCI sections are fully commented out pending more data. Uses `sat_var_check()` (satellite pixel-variance CV) and `Error_50 >= 100` thresholds to flag bad match-up files, written to `meta/satellite_outliers.csv`.
-4. **`code/figures.R`** — reads the QC'd `output/` and `meta/` files to build final figures into `figures/`.
+1. **`code/0_functions.r`** — shared library, sourced by everything else. Never run standalone.
+2. **`code/1_matchups_single.R`** — `process_sensor(sensor_Z)` in matchup mode for all four sensor families: computes per-file match-up stats → `output/matchup_stats_RHOW_<sensor_Z>.csv` and `output/matchup_noQC_stats_RHOW_<sensor_Z>.csv` (files failing the time/distance QC gate, see `process_sensor()`'s use of `site_diff_time_limit()` below).
+3. **`code/2_outliers.R`** — semi-manual outlier screening, active for **all four sensor families** (OLCI, MODIS, VIIRS, OCI). Standardized on a single gate: `sat_var_check(cv_limit = 30)` (satellite pixel-variance CV), controlled by the `cv_limit_choice` variable at the top of the script. A previous `Error_50 >= 100` gate and a prospective RMSE-based gate are left in as commented-out placeholders (not currently applied) in case either is reinstated later. Combines all four sensors' flagged files into `meta/satellite_outliers.csv`. **Must run before `4_matchups_global.R`**, which reads that file.
+4. **`code/3_sensitivity.R`** — empirically justifies the match-up protocol's time-window and distance-window choices (distance sanity check against the fixed `dist_limit = 5 km` ceiling; time-window sensitivity plot + trend test per site, justifying `site_diff_time_limit()`'s MAFR/THAU split). Not read by any other script, so safe to skip in a quick production run, but should be re-run whenever THAU data change materially since its purpose is to justify the window choices with real data. Also the intended home for the (not-yet-run) before/after comparison of `daily_average_matchups()`.
+5. **`code/4_matchups_global.R`** — `process_sensor(sensor_Z, "global")` for all four sensor families: aggregates match-ups per wavelength → `output/global_stats_RHOW_<sensor_Z>.csv`, combined into `output/global_stats_all.csv`. Reads `meta/satellite_outliers.csv` (written by step 3) via `global_stats()`.
+6. **`code/5_figures.R`** — reads the QC'd `output/` and `meta/` files to build final figures into `figures/`. Also contains several `TODO`-marked placeholder sections (station map, generalized error/bias heatmap, hyperspectral-vs-multispectral comparison) sketched out for this manuscript but not yet fully implemented — see the file for details.
 
-Currently only the OLCI (Sentinel-3 A/B) sensor family is fully wired end-to-end; other sensors (MODIS/AQUA, VIIRS, PACE/OCI) have code paths present but disabled (commented out) until the corresponding match-up data is available — see the `TODO` comments in `code/functions.R` and `code/matchups.R`.
+All four sensor families (OLCI, MODIS, VIIRS, OCI) are wired end-to-end for the MAFR site. THAU will be picked up automatically once its data folder exists on disk (see Overview above) — no code changes needed for the core pipeline itself, though see the site-specific time-window note below.
 
-## Core architecture (`code/functions.R`)
+## Core architecture (`code/0_functions.r`)
 
 Sensor naming has three tiers used consistently across the codebase:
 - `sensor_Z` — sensor family / mission group, e.g. `"OLCI"`, `"OCI"`, `"VIIRS"`, `"MODIS"`.
-- `sensor_Y` — specific platform/version within a family, e.g. `"S3A"`, `"S3B"`, `"S3_all"`, `"PACE_V2"`/`"PACE_V30"`/`"PACE_V31"`, `"VIIRS_N"`/`"VIIRS_J1"`/`"VIIRS_J2"`, `"AQUA"`.
+- `sensor_Y` — specific platform/version within a family, e.g. `"S3A"`, `"S3B"`, `"S3_all"`, `"PACE"`, `"VIIRS_N"`/`"VIIRS_J1"`/`"VIIRS_J2"`, `"AQUA"`.
 - `sensor_X` — the reference/in-situ system, generally `"HYPERNETS"` (column-named `"Hyp"` inside loaded data frames).
 
-`sensor_grid()` and `W_nm_out()` map `sensor_Z` → `sensor_Y` list and → the fixed waveband set to compare, respectively. `colour_nm_func()` defines the plotting colour palette per `sensor_Y`, keyed by waveband label — note the code comments flag this palette as needing per-satellite-specific colour bands (see the note in `code/figures.R`), so don't assume today's palette choices are final.
+`sensor_grid()` and `W_nm_out()` map `sensor_Z` → `sensor_Y` list and → the fixed waveband set to compare, respectively. `colour_nm_func()` defines the plotting colour palette per `sensor_Y`, keyed by waveband label — note the code comments flag this palette as needing per-satellite-specific colour bands (see the note in `code/5_figures.R`), so don't assume today's palette choices are final.
 
-Function groups, in read order in `functions.R`:
-- **Utilities**: `file_path_build()`, `load_matchup_mean/long/var()` (parse the semicolon-delimited match-up CSVs; `load_matchup_mean` averages replicate scans and keeps exactly 2 sensor rows per file — mismatches raise a warning), `proc_HYPERNETS_L1C()` (parses HYPERNETS L1C NetCDF files), `sat_var_check()` (per-file satellite pixel variance), `sensor_uncertainty()` (per-sensor measurement uncertainty from variance columns).
+Function groups, in read order in `0_functions.r`:
+- **Utilities**: `file_path_build()`, `load_matchup_mean/long/var()` (parse the semicolon-delimited match-up CSVs; `load_matchup_mean` averages replicate scans and keeps exactly 2 sensor rows per file — mismatches raise a warning), `proc_HYPERNETS_L1C()` (parses HYPERNETS L1C NetCDF files), `sat_var_check()` (per-file satellite pixel variance), `sensor_uncertainty()` (per-sensor measurement uncertainty from variance columns), `available_sites(sat_name)` (checks disk for a given satellite's `MAFR`/`THAU` data folders; used by `sensor_grid()`/`global_scatterplot()` so THAU is included automatically once its data folder exists), `site_diff_time_limit(site_name)` (site-specific match-up time-window limit in minutes — **MAFR = 15, THAU = 30**, mirroring Doxaran et al. 2024's Gironde/Berre split; see below), `daily_average_matchups()` (first-draft, not-yet-validated helper that averages same-day matchups passing the site-specific time window into one representative daily value per wavelength — see the note below).
 - **Statistics**: `base_stats(x_vec, y_vec)` is the central stats function — computes RMSE, MAPE, MSA, ordinary and log-log linear slope, Model II (SMA) regression with 95% CI via `lmodel2`, and Pahlevan-style median relative Bias/Error in log space (25th/50th/75th percentiles). Returns an all-`NA` row when fewer than 2 valid (positive, non-NA) paired observations exist, or `NA` Model-II fields when either vector has zero variance (flat NIR bands). Called symmetrically in both directions (X→Y and Y→X) by `process_global_wavelength()`.
-- **Match-up processing**: `process_matchup_file()` computes pairwise stats between all sensor combinations within one match-up file; `global_stats()` aggregates across all files per wavelength, applying the outlier list from `meta/satellite_outliers.csv` and the pre-defined `W_nm_out()` waveband set; `process_sensor()` is the top-level driver called from `matchups.R`, writing both matchup-level and global-level CSVs and applying the diff-time (≤30 min) / distance (≤5 km) QC gate.
-- **Plotting**: `plot_matchup_*()` family for per-file diagnostics, `plot_global_nm()`/`global_scatterplot()` for the final 1:1 scatter figures with Model II regression lines and CI bands, `global_scatterplot_stack()` for multi-panel composites (currently only reachable via commented-out calls — not yet adapted to this repo's per-sensor grid, per the `TODO` at its definition).
+- **Match-up processing**: `process_matchup_file()` computes pairwise stats between all sensor combinations within one match-up file; `global_stats(site_name, sensor_Y, daily_average = FALSE)` aggregates across all files per wavelength, applying the outlier list from `meta/satellite_outliers.csv`, the pre-defined `W_nm_out()` waveband set, and (if `daily_average = TRUE`) `daily_average_matchups()`; `process_sensor(sensor_Z, stat_choice = "matchup", daily_average = FALSE)` is the top-level driver, writing both matchup-level and global-level CSVs. **Time/distance QC gate (updated 2026-07-10):** distance uses a single fixed `dist_limit = 5 km` sanity check for every site (the pipeline already selects only the nearest pixel, and observed distances are almost always < 1 km, so 5 km just guards against a gross geolocation error, not a meaningful spatial-averaging choice). Time now uses **`site_diff_time_limit(site_name)`** instead of one fixed value — MAFR = 15 min, THAU = 30 min — mirroring Doxaran et al. 2024's Gironde (±15 min) vs Berre (±30 min) split, justified empirically in `code/3_sensitivity.R`. **Still first-draft / not yet run against real data:** the site-specific daily-averaging step (`daily_average_matchups()`, `daily_average` param) — defaults to `FALSE` everywhere so current output is unaffected until it's validated; see `manuscript/track-changes.md`.
+- **Plotting**: `plot_matchup_*()` family for per-file diagnostics, `plot_global_nm()`/`global_scatterplot()` for the final 1:1 scatter figures with Model II regression lines and CI bands, `global_scatterplot_stack()` for multi-panel composites.
 
 ## Known repo-specific gotchas
 
 - `.gitignore` intentionally lists exception rules after their governing globs — don't reorder without checking pattern precedence.
-- Several functions (`sensor_uncertainty()`, parts of `code/figures.R`) reference the sibling `HypernetsTara` project's output directory and GPS/Trios processed-data paths; these are not portable to a fresh machine and are effectively dead/legacy code paths unless that sibling project is present.
-- `figures/` currently only contains the OLCI (S3A/S3B/S3) global scatterplots; `code/figures.R` has substantial commented-out code for a "Figure 1" station-map figure that depends on external Tara GPS/Trios/HyperPRO data.
+- Several functions (`sensor_uncertainty()`, parts of `code/5_figures.R`) reference the sibling `HypernetsTara` project's output directory and GPS/Trios processed-data paths; these are not portable to a fresh machine and are effectively dead/legacy code paths unless that sibling project is present.
+- `figures/` currently only contains the OLCI (S3A/S3B/S3) global scatterplots plus per-family scatter stacks for MODIS/VIIRS/OCI; `code/5_figures.R` has substantial legacy code for a Tara-cruise "Figure 1" station-map figure (depends on external Tara GPS/Trios/HyperPRO data) alongside new `TODO`-marked placeholders for a MAFR/THAU-appropriate replacement.
+- The outlier CV gate (`cv_limit_choice` in `code/2_outliers.R`) is currently fixed at 30; this is a placeholder value pending further validation, not a settled methodological choice — see `manuscript/track-changes.md` for context.
+- `daily_average_matchups()` (in `code/0_functions.r`) is a first-draft implementation whose file-name date-parsing has only been confirmed against the S3A/S3B/JPSS1/JPSS2/SNPP/AQUA naming patterns seen so far — **not** yet checked against PACE or any THAU-specific naming quirks. Don't flip `daily_average = TRUE` for production numbers until this is confirmed.
+- Note the naming-convention quirk in `code/0_functions.r`: this file uses a lowercase `.r` extension (`0_functions.r`), while every other pipeline script uses uppercase `.R` — intentional, per the exact naming scheme specified when the scripts were renamed (2026-07-10).

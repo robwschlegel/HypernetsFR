@@ -1,5 +1,9 @@
-# code/functions.R
-# Code shared across the project
+# code/0_functions.R
+# Code shared across the project. Sourced by every other script; never run standalone.
+#
+# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
+#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
+# (renamed 2026-07-10 from code/functions.R -- see manuscript/track-changes.md)
 
 
 # Libraries ---------------------------------------------------------------
@@ -324,9 +328,69 @@ sat_var_check <- function(file_name, cv_limit = 30){
   return(data.frame(file_name = file_name, cv = abs(df_check$variability_centered), cv_limit = cv_limit))
 }
 
+# Determine which sites currently have data on disk for a given satellite platform
+# NB: MAFR (Gironde Estuary, highly turbid) is always assumed present. THAU (lagoon,
+# clear-water comparison site to MAFR -- see Doxaran et al. 2024's analogous Berre
+# lagoon vs Gironde Estuary contrast) is added automatically the moment its data folder
+# exists on disk, so no further code changes will be needed once THAU data are delivered.
+available_sites <- function(sat_name){
+  candidate_sites <- c("MAFR", "THAU")
+  site_present <- vapply(candidate_sites, function(s) dir.exists(file_path_build(s, sat_name)), logical(1))
+  sites_found <- candidate_sites[site_present]
+  if(length(sites_found) == 0) stop(paste0("No site data found on disk for sensor: ", sat_name))
+  return(sites_found)
+}
+
+# Site-specific matchup time-window limit (minutes), added 2026-07-10.
+# NB: unlike Doxaran et al. 2024 (who additionally varied the *spatial* matchup criterion per site --
+# a 3x3-pixel box at Berre vs. nearest-pixel-only at Gironde), this pipeline keeps ONE spatial rule
+# (nearest pixel + a fixed dist_limit = 5 km sanity check, see process_sensor()) for every site, and
+# varies only the TIME window: MAFR's fast tidal turbidity dynamics need a tighter window than THAU's
+# comparatively stable lagoon water, mirroring Doxaran et al. 2024's Gironde (+/-15 min) vs Berre
+# (+/-30 min) choice. See code/3_sensitivity.R for the empirical check behind these two numbers, and
+# manuscript/roadmap.md for the open methodological question this resolves.
+# TODO: revisit both values once real multi-day THAU data are available.
+site_diff_time_limit <- function(site_name){
+  dplyr::case_when(
+    site_name == "MAFR" ~ 15,
+    site_name == "THAU" ~ 30,
+    TRUE ~ 30 # fallback for any future/unrecognised site
+  )
+}
+
+# Average multiple same-day HYPERNETS-scan-vs-satellite-overpass matchups into one representative
+# daily value per wavelength, for use at the global-stats stage. Added 2026-07-10 per project
+# decision: rather than simply tightening/loosening the diff_time filter per site, matchups that pass
+# the site-specific site_diff_time_limit() threshold should be temporally averaged per day before
+# global per-wavelength statistics are computed, rather than treated as independent data points --
+# this also directly addresses the "not all matchups are independent of one another" caveat raised in
+# the Tara "in review" paper's Conclusion.
+#
+# NB: FIRST-DRAFT IMPLEMENTATION, NOT YET VALIDATED against real multi-day MAFR/THAU data. In
+# particular the date-extraction logic below reuses the exact convention already used elsewhere in
+# this file (see the `unique_days` block inside global_scatterplot()) -- i.e. split file_name on "_",
+# take the 2nd element, split that on "T", take the 1st element -- which is known to work for the
+# S3A/S3B/JPSS1/JPSS2/SNPP/AQUA naming patterns seen so far, but has NOT been checked against PACE or
+# any THAU-specific naming quirks. Confirm this still holds before trusting daily_average = TRUE for
+# the manuscript's final numbers (see manuscript/track-changes.md).
+#
+# df: expects the long-format data.frame produced by load_matchup_long()/load_matchups_folder(long =
+#     TRUE), i.e. one row per file_name x wavelength, already filtered to wavelength %in% W_nm and to
+#     files passing site_diff_time_limit() (that filtering happens upstream, in global_stats()).
+daily_average_matchups <- function(df, site_name){
+  df |>
+    mutate(match_date = sapply(str_split(file_name, "_"), "[[", 2),
+           match_date = sapply(str_split(match_date, "T"), "[[", 1),
+           match_date = as.Date(match_date, format = "%Y%m%d")) |>
+    summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)),
+              n_scans_averaged = dplyr::n(),
+              .by = c("match_date", "wavelength")) |>
+    mutate(site_name = site_name, .before = "match_date")
+}
+
 # Create a grid of sensor to ply over
 sensor_grid <- function(sensor_Z){
-  
+
    # Satellite names per sensor
     if(sensor_Z == "MODIS"){
       sensor_Y <- c("AQUA")
@@ -339,13 +403,15 @@ sensor_grid <- function(sensor_Z){
     } else {
       stop("Incorrect name given for sensor_Z")
     }
-  
+
   # Print sensors for ease of use
   message("Sensor name : ", paste0(sensor_Z, collapse = ", ")); message("Sat name(s) : ",paste0(sensor_Y, collapse = ", "))
-  
+
   # Create grid for mdply()
-  ply_grid <- expand_grid(site_name = c("MAFR"), # ite_name = c("MAFR", "THAU"), # TODO: Add THAU once these data are available
-                          sensor_Y = sensor_Y) |> distinct()
+  # NB: site list is determined per sensor_Y via available_sites() so THAU is included
+  # automatically once its data exist on disk (see available_sites() above); MAFR-only today.
+  site_list <- unique(unlist(lapply(sensor_Y, available_sites)))
+  ply_grid <- expand_grid(site_name = site_list, sensor_Y = sensor_Y) |> distinct()
 }
 
 # Output desired wavelengths based on sensor_Y
@@ -745,7 +811,7 @@ process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_
 # site_name = "MAFR"; sensor_Y = "SNPP"
 # site_name = "MAFR"; sensor_Y = "JPSS1"
 # site_name = "MAFR"; sensor_Y = "AQUA"
-global_stats <- function(site_name, sensor_Y){
+global_stats <- function(site_name, sensor_Y, daily_average = FALSE){
   
   # Create multiple folder paths if requested
   if(sensor_Y == "S3_all"){
@@ -810,8 +876,17 @@ global_stats <- function(site_name, sensor_Y){
   W_nm <- W_nm_out(sensor_Y)
   
   # Filter data.frame accordingly
-  match_base_filt <- filter(match_base, wavelength %in% W_nm) #|> 
+  match_base_filt <- filter(match_base, wavelength %in% W_nm) #|>
     # mutate(wavelength_idx = wavelength, .before = wavelength)
+
+  # Optional day-level temporal averaging using the site-specific time window (see
+  # site_diff_time_limit() and daily_average_matchups() for full rationale). Defaults to FALSE
+  # (preserving prior behaviour, i.e. every passing HYPERNETS-scan-vs-satellite-overpass pairing
+  # is treated as an independent matchup) until daily_average_matchups() has been validated
+  # against real multi-day MAFR/THAU data -- see manuscript/track-changes.md.
+  if(daily_average){
+    match_base_filt <- daily_average_matchups(match_base_filt, site_name)
+  }
 
   # Get the requested wavelengths global stats, add matchup count, and exit
   # doParallel::registerDoParallel(cores = 14)
@@ -855,7 +930,7 @@ process_matchup_folder <- function(site_name, sensor_Y){
 # Process multiple folders based on request
 # sensor_Z = "MODIS"; stat_choice = "matchup"
 # sensor_Z = "OLCI"; stat_choice = "global"
-process_sensor <- function(sensor_Z, stat_choice = "matchup"){
+process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = FALSE){
   
   # Create ply grid
   ply_grid <- sensor_grid(sensor_Z)
@@ -875,13 +950,20 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup"){
     proc_res <- plyr::mdply(ply_grid, process_matchup_folder, .parallel = FALSE)
     # plan(sequential)#, workers = 10)
     # proc_res <- furrr::future_pmap_dfr(ply_grid, process_matchup_folder, .options = furrr_options(seed = TRUE))
-    # Set time limits
-    proc_res <- proc_res |> 
-      mutate(diff_time_limit = 30, .after = diff_time) |> 
+    # Set time and distance limits
+    # NB (2026-07-10): diff_time_limit is now SITE-SPECIFIC via site_diff_time_limit() (MAFR = 15 min,
+    # THAU = 30 min -- see that function's definition for rationale). dist_limit remains a single fixed
+    # 5 km ceiling for every site: this pipeline already selects only the single nearest pixel to the
+    # station (see get_nearest_pixels()/Hypernets_matchups upstream), and observed distances are almost
+    # always < 1 km in practice, so 5 km is a sanity check against a gross geolocation error, not a
+    # meaningful spatial-averaging choice the way it might be for a pixel-box approach. See
+    # code/3_sensitivity.R for the empirical checks behind both choices.
+    proc_res <- proc_res |>
+      mutate(diff_time_limit = site_diff_time_limit(site_name), .after = diff_time) |>
       mutate(dist_limit = 5, .after = dist)
     # Enforce time and distance constraint
-    proc_res_clean <- proc_res |> 
-      filter(diff_time <= diff_time_limit) |> 
+    proc_res_clean <- proc_res |>
+      filter(diff_time <= diff_time_limit) |>
       filter(dist <= dist_limit)
     write_csv(proc_res_clean, paste0("output/matchup_stats_RHOW_",sensor_Z,".csv"))
     # Save the matchups removed this way
@@ -889,7 +971,9 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup"){
     write_csv(proc_res_unclean, paste0("output/matchup_noQC_stats_RHOW_",sensor_Z,".csv"))
   } else {
     # registerDoParallel(cores = 14)
-    proc_res <- plyr::mdply(ply_grid, global_stats, .parallel = FALSE)
+    # NB: daily_average defaults to FALSE (see global_stats()/daily_average_matchups()) until that
+    # first-draft implementation has been validated against real multi-day MAFR/THAU data.
+    proc_res <- plyr::mdply(ply_grid, global_stats, daily_average = daily_average, .parallel = FALSE)
     # plan(multicore, workers = 10)
     # proc_res <- future_pmap_dfr(ply_grid, global_stats, .options = furrr_options(seed = TRUE))
     write_csv(proc_res, paste0("output/global_stats_RHOW_",sensor_Z,".csv"))
@@ -1357,15 +1441,18 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   outliers_all <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) |> distinct()
   
   # Load data based on in situ comparisons or not
-  # TODO: Add THAU once it's available
+  # NB: site list picked up automatically via available_sites() -- THAU is included
+  # once its data folder exists on disk, no code change needed here.
   print("Loading matchups")
   if(sensor_Y == "S3"){
-    ply_folders <- expand.grid(site_name = c("MAFR"), sat_name = c("S3A", "S3B"))
+    site_list <- unique(unlist(lapply(c("S3A", "S3B"), available_sites)))
+    ply_folders <- expand.grid(site_name = site_list, sat_name = c("S3A", "S3B"))
     # match_base_1 <- bind_rows(load_matchups_folder("S3A", long = TRUE),
     #                           load_matchups_folder(e_name, "S3B", long = TRUE))
   } else {
     # match_base_1 <- load_matchups_folder(site_name, sensor_Y, long = TRUE)
-    ply_folders <- expand.grid(site_name = c("MAFR"), sat_name = sensor_Y)
+    site_list <- available_sites(sensor_Y)
+    ply_folders <- expand.grid(site_name = site_list, sat_name = sensor_Y)
   }
   
   # Load all folders

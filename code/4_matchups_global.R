@@ -1,50 +1,29 @@
-# code/matchups.R
-# Get the stats for all matchups and visualise results
+# code/4_matchups_global.R
+# Aggregate per-file match-ups into global (per-wavelength) statistics, once
+# outlier screening (2_outliers.R) and the matchup-protocol sensitivity checks
+# (3_sensitivity.R) have both been run.
+#
+# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
+#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
+# (renamed/split 2026-07-10 from the former single code/matchups.R -- see
+# manuscript/track-changes.md)
 
 
 # Setup -------------------------------------------------------------------
 
-source("code/functions.R")
+source("code/0_functions.r")
 
-
-# Individual matchup stats ------------------------------------------------
-
-process_sensor("MODIS")
-process_sensor("VIIRS")
-process_sensor("OLCI")
-process_sensor("OCI")
-
-# Re-load all single matchups
-matchup_single_all <- map_dfr(dir("output", pattern = "matchup_stats_", full.names = TRUE), read_csv)
-
-# Date and time range of samples per sensor
-matchup_date_time_range <- matchup_single_all |> 
-  dplyr::select(sensor_X, dateTime_X) |> 
-  distinct() |> 
-  mutate(date = as.Date(dateTime_X),
-         time = format(dateTime_X, format = "%H:%M:%S")) |> 
-  summarise(date_min = min(date), date_max = max(date),
-            time_min = min(time), time_max = max(time), .by = "sensor_X")
-
-# Unique number of satellite passes available for each platform+sensor/version
-matchup_sat_uniq <- matchup_single_all |> 
-  dplyr::select(sensor_X, dateTime_X) |> 
-  filter(!(sensor_X %in% c("Hyp", "TRIOS", "HYPERPRO"))) |> 
-  distinct() |> 
-  summarise(sat_count = n(), .by = "sensor_X")
-
-
-# Outliers ---------------------------------------------------------------
-
-# Run this to populate the necessary files used in the global matchups
-# NB: The outlier identification process is more manually focussed, hence the separate script
-source("code/outliers.R")
+# NB: this script assumes code/1_matchups_single.R, code/2_outliers.R, and
+# code/3_sensitivity.R have already been run in this session (or their outputs --
+# output/matchup_stats_RHOW_*.csv and meta/satellite_outliers.csv -- already exist
+# on disk), since global_stats() reads both.
 
 
 # Global statistics --------------------------------------------------------
 
-# NB: Run code/outliers.R before the global stats in order to filter outliers
-
+# daily_average = FALSE for now (see global_stats()/daily_average_matchups() in
+# code/0_functions.r) -- flip to TRUE once that first-draft implementation has been
+# validated against real multi-day MAFR/THAU data.
 process_sensor("MODIS", "global")
 process_sensor("VIIRS", "global")
 process_sensor("OLCI", "global")
@@ -59,45 +38,45 @@ wave_length_bands <- c(380, 400, 412, 443, 490, 510, 560, 620, 673, 700, 885, 10
 # TODO: Add back in once PACE data are available
 # Load PACE data separately to filter specific wavebands
 # NB: Careful with the exact indexing of files here
-# global_stats_wavelengths <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(4)], read_csv, show_col_types = FALSE) |> 
+# global_stats_wavelengths <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(4)], read_csv, show_col_types = FALSE) |>
 #   filter(Wavelength_nm %in% wave_length_bands)
 
 # Load all global stats
 # NB: Careful with the exact indexing of files here
-global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(2)], 
-                                read_csv, show_col_types = FALSE) #|> 
+global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(2)],
+                                read_csv, show_col_types = FALSE) #|>
   # bind_rows(global_stats_wavelengths)
 write_csv(global_stats_all, file = "output/global_stats_all.csv")
 
 # Visualise difference between linear-space and log-space slopes
-# global_stats_all |> 
-#   filter(sensor_X %in% c("HYPERNETS")) |> 
+# global_stats_all |>
+#   filter(sensor_X %in% c("HYPERNETS")) |>
 #   ggplot() +
 #   geom_histogram(aes(x = Slope), colour = "green", alpha = 0.3, binwidth = 0.1) +
 #   geom_histogram(aes(x = Slope_log), colour = "red", alpha = 0.3, binwidth = 0.1) +
 #   facet_grid(sensor_X ~ sensor_Y)
 
 # Get matchups counts, outliers, etc.
-global_count_var_name <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
+global_count_var_name <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
-  dplyr::select(sensor_X, sensor_Y, var_name, n_clean, n_no_out) |> 
-  group_by(var_name, sensor_X, sensor_Y) |> 
-  filter(n_clean == max(n_clean, na.rm = TRUE)) |> 
-  ungroup() |> 
+  dplyr::select(sensor_X, sensor_Y, var_name, n_clean, n_no_out) |>
+  group_by(var_name, sensor_X, sensor_Y) |>
+  filter(n_clean == max(n_clean, na.rm = TRUE)) |>
+  ungroup() |>
   distinct()
 
 # Quantify which sensors matched most closely to which satellites
-global_match_mean <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
+global_match_mean <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength >= 400, wavelength <= 600) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
             Error = mean(Error_50, na.rm = TRUE), .by = c("site_name", "var_name", "sensor_X", "sensor_Y"))
-global_match_mean_red <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS", "TRIOS", "HYPERPRO")) |> 
+global_match_mean_red <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS", "TRIOS", "HYPERPRO")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
@@ -106,75 +85,75 @@ global_match_mean_red <- global_stats_all |>
             MARD = mean(MARD_50, na.rm = TRUE), .by = c("site_name", "var_name", "sensor_X", "sensor_Y"))
 
 # Mean just for in situ systems
-global_match_is_mean <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
+global_match_is_mean <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength >= 400, wavelength <= 600) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
+  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
             Error = mean(Error_50, na.rm = TRUE), .by = c("site_name", "var_name", "sensor_X"))
-global_match_is_mean_red <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
+global_match_is_mean_red <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
-  # filter(sensor_Y != "S3B") |> 
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
+  # filter(sensor_Y != "S3B") |>
+  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             MRD_mean = mean(MRD_50, na.rm = TRUE),
             MRD_abs = mean(abs(MRD_50), na.rm = TRUE),
             MARD = mean(MARD_50, na.rm = TRUE), .by = c("site_name", "var_name", "sensor_X"))
 
 # Global mean matchups from the perspective of the satellites
-global_match_sat_mean <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
+global_match_sat_mean <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength >= 400, wavelength <= 600) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
+  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
             Error = mean(Error_50, na.rm = TRUE), .by = c("sensor_Y"))
-global_match_sat_mean_red <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
+global_match_sat_mean_red <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
+  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             MRD_mean = mean(MRD_50, na.rm = TRUE),
             MRD_abs = mean(abs(MRD_50), na.rm = TRUE),
             MARD = mean(MARD_50, na.rm = TRUE), .by = c("sensor_Y"))
 
 # Count of number of wavebands with negative or positive biases
-global_match_bias_sign <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
-  # filter(var_name == "RHOW") |> 
+global_match_bias_sign <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
+  # filter(var_name == "RHOW") |>
   mutate(Bias_positive = case_when(Bias_50 > 0 ~ 1, TRUE ~ 0),
-         Bias_negative = case_when(Bias_50 < 0 ~ 1, TRUE ~ 0)) |> 
+         Bias_negative = case_when(Bias_50 < 0 ~ 1, TRUE ~ 0)) |>
   summarise(Bias_positive = sum(Bias_positive),
             Bias_negative = sum(Bias_negative), .by = c("site_name", "var_name", "sensor_X", "sensor_Y"))
 
 # Summarise per in situ platform against satellites
-global_match_bias_sign_remote <- global_match_bias_sign |> 
-  filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
-  filter(var_name == "RHOW") |> 
+global_match_bias_sign_remote <- global_match_bias_sign |>
+  filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  filter(var_name == "RHOW") |>
   summarise(Bias_positive = sum(Bias_positive),
             Bias_negative = sum(Bias_negative), .by = c("sensor_X"))
 
 # Average bias and error values per waveband
-global_waveband_mean <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
+global_waveband_mean <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
+  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
   filter(var_name == "RHOW") |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
             Error = mean(Error_50, na.rm = TRUE), .by = c("wavelength"))
-global_waveband_mean_red <- global_stats_all |> 
-  filter(sensor_X %in% c("HYPERNETS")) |> 
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |> 
-  # filter(sensor_Y != "S3B") |> 
+global_waveband_mean_red <- global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
+  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "S3B") |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
@@ -183,13 +162,17 @@ global_waveband_mean_red <- global_stats_all |>
             MARD = mean(MARD_50, na.rm = TRUE), .by = c("wavelength"))
 
 # Plot the global mean matchups per in situ sensor
-global_match_mean |> 
-  filter(!(sensor_Y %in% c("HYPERNETS"))) |> 
+global_match_mean |>
+  filter(!(sensor_Y %in% c("HYPERNETS"))) |>
   ggplot(aes(x = sensor_X, y = Error)) +
   geom_boxplot(aes(fill = sensor_X))
 
 
 # Check individual matchups -----------------------------------------------
+# NB: legacy/ad hoc diagnostic code, kept from the original code/matchups.R. References the old
+# 3-argument file_path_build() signature and Tara-project file names -- not portable as-is to
+# MAFR/THAU without editing the specific file names/paths referenced below. Left in place
+# intentionally as a template for one-off debugging of individual matchup files.
 
 # Files of interest
 # HYPERNETS_vs_TRIOS_vs_20240816T081000_LW.csv # Negative values cause massive MAPE (%)
@@ -218,12 +201,13 @@ error_pahlevan_final <- 10^error_pahlevan - 1
 message("Error (%) : ", round(error_pahlevan_final * 100, 2))
 
 # Plot data
-match_base |> 
+match_base |>
   ggplot(aes(x = Hyp, y = TRIOS)) +
   geom_point(aes(colour = wavelength))
 
 
 # Check individual global values ------------------------------------------
+# NB: legacy/ad hoc diagnostic code, same caveats as above -- references ~/HypernetsTara paths.
 
 # Choose acordingly
 folder_path <- file_path_build("RHOW", "HYPERNETS", "HYPERPRO")
@@ -266,7 +250,6 @@ error_pahlevan_final <- 10^error_pahlevan - 1
 message("Error (%) : ", round(error_pahlevan_final * 100, 2))
 
 # Plot data
-match_base |> filter(wavelength == W_nm[8]) |> 
+match_base |> filter(wavelength == W_nm[8]) |>
   ggplot(aes(x = HYPERPRO, y = Hyp)) +
   geom_point(aes(colour = wavelength))
-
