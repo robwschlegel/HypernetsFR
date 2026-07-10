@@ -2,27 +2,21 @@
 # Aggregate per-file match-ups into global (per-wavelength) statistics, once
 # outlier screening (2_outliers.R) and the matchup-protocol sensitivity checks
 # (3_sensitivity.R) have both been run.
-#
-# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
-#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
-# (renamed/split 2026-07-10 from the former single code/matchups.R -- see
-# manuscript/track-changes.md)
 
 
 # Setup -------------------------------------------------------------------
 
-source("code/0_functions.r")
+source("code/0_functions.R")
 
 # NB: this script assumes code/1_matchups_single.R, code/2_outliers.R, and
-# code/3_sensitivity.R have already been run in this session (or their outputs --
-# output/matchup_stats_RHOW_*.csv and meta/satellite_outliers.csv -- already exist
+# code/3_sensitivity.R have already been run andtheir outputs already exist
 # on disk), since global_stats() reads both.
 
 
 # Global statistics --------------------------------------------------------
 
 # daily_average = FALSE for now (see global_stats()/daily_average_matchups() in
-# code/0_functions.r) -- flip to TRUE once that first-draft implementation has been
+# code/0_functions.R) -- flip to TRUE once that first-draft implementation has been
 # validated against real multi-day MAFR/THAU data.
 process_sensor("MODIS", "global")
 process_sensor("VIIRS", "global")
@@ -35,26 +29,16 @@ outliers_sat <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) 
 # Decide which wavelengths to compare with wavebands
 wave_length_bands <- c(380, 400, 412, 443, 490, 510, 560, 620, 673, 700, 885, 1050)
 
-# TODO: Add back in once PACE data are available
-# Load PACE data separately to filter specific wavebands
-# NB: Careful with the exact indexing of files here
-# global_stats_wavelengths <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(4)], read_csv, show_col_types = FALSE) |>
-#   filter(Wavelength_nm %in% wave_length_bands)
+# Load PACE data and subset by wavelengths of interest (see wave_length_bands above)
+global_stats_wavelengths <- read_csv("output/global_stats_RHOW_OCI.csv", show_col_types = FALSE) |>
+  filter(wavelength %in% wave_length_bands)
 
 # Load all global stats
 # NB: Careful with the exact indexing of files here
-global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(2)],
-                                read_csv, show_col_types = FALSE) #|>
-  # bind_rows(global_stats_wavelengths)
+global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE)[c(2, 4:5)],
+                                read_csv, show_col_types = FALSE) |>
+  bind_rows(global_stats_wavelengths)
 write_csv(global_stats_all, file = "output/global_stats_all.csv")
-
-# Visualise difference between linear-space and log-space slopes
-# global_stats_all |>
-#   filter(sensor_X %in% c("HYPERNETS")) |>
-#   ggplot() +
-#   geom_histogram(aes(x = Slope), colour = "green", alpha = 0.3, binwidth = 0.1) +
-#   geom_histogram(aes(x = Slope_log), colour = "red", alpha = 0.3, binwidth = 0.1) +
-#   facet_grid(sensor_X ~ sensor_Y)
 
 # Get matchups counts, outliers, etc.
 global_count_var_name <- global_stats_all |>
@@ -161,28 +145,30 @@ global_waveband_mean_red <- global_stats_all |>
             MRD_abs = mean(abs(MRD_50), na.rm = TRUE),
             MARD = mean(MARD_50, na.rm = TRUE), .by = c("wavelength"))
 
-# Plot the global mean matchups per in situ sensor
-global_match_mean |>
-  filter(!(sensor_Y %in% c("HYPERNETS"))) |>
-  ggplot(aes(x = sensor_X, y = Error)) +
-  geom_boxplot(aes(fill = sensor_X))
+# Plot the global mean matchups for HYPERNETS vs. satellites, per site and sensor
+global_stats_all |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
+  ggplot(aes(x = sensor_Y, y = Error_50)) +
+  geom_boxplot(aes(fill = sensor_Y)) +
+  labs(x = "In situ platform", y = "Error (%)", fill = "Satellite sensor") +
+  theme_minimal() +
+  theme(panel.border = element_rect(fill = NA, colour = "black"))
 
 
 # Check individual matchups -----------------------------------------------
-# NB: legacy/ad hoc diagnostic code, kept from the original code/matchups.R. References the old
-# 3-argument file_path_build() signature and Tara-project file names -- not portable as-is to
-# MAFR/THAU without editing the specific file names/paths referenced below. Left in place
-# intentionally as a template for one-off debugging of individual matchup files.
+# Ad hoc diagnostic template for inspecting one matchup file in detail.
+# Change site_name, sat_name, and file_name below to target any file of interest.
 
-# Files of interest
-# HYPERNETS_vs_TRIOS_vs_20240816T081000_LW.csv # Negative values cause massive MAPE (%)
+site_name <- "MAFR"
+sat_name  <- "S3A"
+file_name <- "S3A_20240531T101658_vs_HYPERNETS_20240531T100000_RHOW_C.csv"
 
 # Load file
-match_1 <- load_matchup_long(paste0(file_path_build("LW", "HYPERNETS", "TRIOS"), "HYPERNETS_vs_TRIOS_vs_20240816T081000_LW.csv"))
+match_1 <- load_matchup_long(file.path(file_path_build(site_name, sat_name), file_name))
 
 # Create vectors from filtered columns
 (x_vec <- match_1[["Hyp"]])
-(y_vec <- match_1[["TRIOS"]])
+(y_vec <- match_1[[sat_name]])
 
 # Calculate stats one-by-one
 message("Slope : ", round(coef(lm(y_vec ~ x_vec))[2], 4))
@@ -201,20 +187,25 @@ error_pahlevan_final <- 10^error_pahlevan - 1
 message("Error (%) : ", round(error_pahlevan_final * 100, 2))
 
 # Plot data
-match_base |>
-  ggplot(aes(x = Hyp, y = TRIOS)) +
+match_1 |>
+  ggplot(aes(x = Hyp, y = .data[[sat_name]])) +
   geom_point(aes(colour = wavelength))
 
 
 # Check individual global values ------------------------------------------
-# NB: legacy/ad hoc diagnostic code, same caveats as above -- references ~/HypernetsTara paths.
+# Ad hoc diagnostic template for inspecting per-wavelength stats across all
+# QC-passed files for a given satellite. Change the three variables below to
+# target any site/satellite combination.
 
-# Choose acordingly
-folder_path <- file_path_build("RHOW", "HYPERNETS", "HYPERPRO")
+site_name <- "MAFR"
+sat_name  <- "S3A"
+sensor_Z  <- "OLCI"   # sensor family: OLCI / MODIS / VIIRS / OCI
 
-# List all files in directory
+# Build file list filtered to files that passed the spatiotemporal QC gate
+folder_path <- file_path_build(site_name, sat_name)
 file_list <- list.files(folder_path, pattern = "*.csv", full.names = TRUE)
-match_base_details <- read_csv("~/HypernetsTara/output/matchup_stats_RHOW_in_situ.csv") |>
+match_base_details <- read_csv(paste0("output/matchup_stats_RHOW_", sensor_Z, ".csv"),
+                               show_col_types = FALSE) |>
   dplyr::select(file_name) |> distinct()
 file_list_clean <- file_list[basename(file_list) %in% match_base_details$file_name]
 
@@ -222,16 +213,15 @@ file_list_clean <- file_list[basename(file_list) %in% match_base_details$file_na
 match_base <- map_dfr(file_list_clean, load_matchup_long)
 # print(unique(match_base$wavelength))
 
-# Auto-generate chosen wavelengths
-(W_nm <- W_nm_out("HYPERNETS"))
-# W_nm <- c(380, 400, 412, 443, 490, 510, 560, 620, 673, 700)
+# Choose wavelengths for this satellite
+(W_nm <- W_nm_out(sat_name))
 
 # Get data.frame for matchup based on the wavelength of choice
 (matchup_filt <- filter(match_base, wavelength == W_nm[10]))
 
-# Create vectors from filtered columns
-(x_vec <- matchup_filt[["HYPERPRO"]])
-(y_vec <- matchup_filt[["Hyp"]])
+# Create vectors from filtered columns (x = HYPERNETS, y = satellite)
+(x_vec <- matchup_filt[["Hyp"]])
+(y_vec <- matchup_filt[[sat_name]])
 
 # Calculate stats one-by-one
 message("Slope : ", round(coef(lm(y_vec ~ x_vec))[2], 4))
@@ -251,5 +241,6 @@ message("Error (%) : ", round(error_pahlevan_final * 100, 2))
 
 # Plot data
 match_base |> filter(wavelength == W_nm[8]) |>
-  ggplot(aes(x = HYPERPRO, y = Hyp)) +
+  ggplot(aes(x = Hyp, y = .data[[sat_name]])) +
   geom_point(aes(colour = wavelength))
+

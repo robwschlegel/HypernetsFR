@@ -2,20 +2,16 @@
 # Sensitivity analyses used to justify the match-up protocol's time-window and
 # distance-window choices (see manuscript/roadmap.md, "site-specific matchup
 # criteria" item, and site_diff_time_limit()/daily_average_matchups() in
-# code/0_functions.r).
-#
-# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
-#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
-# New script added 2026-07-10 -- see manuscript/track-changes.md.
+# code/0_functions.R).
 #
 # NB: unlike Doxaran et al. 2024 (who used a fixed 3x3-pixel-box/+-30 min window at
 # the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde),
 # this pipeline uses ONE distance ceiling (dist_limit = 5 km, a sanity check only --
 # we already select the single nearest pixel, and observed distances are almost always
 # < 1 km) for every site, but a SITE-SPECIFIC time window (site_diff_time_limit() in
-# code/0_functions.r: 15 min at MAFR, 30 min at THAU). This script empirically checks
+# code/0_functions.R: 15 min at MAFR, 30 min at THAU). This script empirically checks
 # both choices, and is also where the eventual before/after comparison of
-# daily_average_matchups() (see code/0_functions.r) should live once that first-draft
+# daily_average_matchups() (see code/0_functions.R) should live once that first-draft
 # function has been validated.
 #
 # This script is intended to be run AFTER 1_matchups_single.R (needs
@@ -28,7 +24,7 @@
 
 # Setup -------------------------------------------------------------------
 
-source("code/0_functions.r")
+source("code/0_functions.R")
 
 
 # Distance sanity check ------------------------------------------------------
@@ -41,7 +37,7 @@ matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup
 # Confirm nearest-pixel distances are almost always well inside the 5 km sanity-check ceiling
 # (per project decision 2026-07-10: dist_limit = 5 km is kept fixed and site-independent, since
 # it is a sanity check against a gross geolocation error rather than a meaningful spatial-averaging
-# choice -- the pipeline already selects only the single nearest pixel to each station)
+# choice -- Hypernets_matchups already selects only the single nearest pixel to each station)
 dist_summary <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   summarise(dist_min = min(dist, na.rm = TRUE),
@@ -49,6 +45,7 @@ dist_summary <- matchup_all_noQC |>
             dist_p95 = quantile(dist, 0.95, na.rm = TRUE),
             dist_max = max(dist, na.rm = TRUE),
             n_over_1km = sum(dist > 1, na.rm = TRUE),
+            n_over_5km = sum(dist > 5, na.rm = TRUE),
             n = dplyr::n(),
             .by = c("site_name", "sensor_Y"))
 print(dist_summary)
@@ -65,7 +62,7 @@ pl_dist <- matchup_all_noQC |>
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = "black"))
-ggsave("figures/sensitivity_distance_check.png", pl_dist, width = 10, height = 6)
+ggsave("figures/sensitivity_distance_check.png", pl_dist, width = 10, height = 3)
 
 
 # Time-window sensitivity -----------------------------------------------------
@@ -78,6 +75,7 @@ ggsave("figures/sensitivity_distance_check.png", pl_dist, width = 10, height = 6
 # exactly the asymmetry the two different site-specific limits are meant to capture.
 pl_time_sensitivity <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
+  filter(Error_50 < 1000) |> # TODO: Loop back and look at these high error values
   ggplot(aes(x = diff_time, y = Error_50)) +
   geom_point(aes(colour = dist), alpha = 0.6) +
   geom_smooth(method = "lm", se = TRUE) +
@@ -106,7 +104,7 @@ print(time_trend_test)
 
 # Daily-averaging sensitivity (site-specific time window) -----------------------
 
-# TODO: once daily_average_matchups() (code/0_functions.r) has been validated against real
+# TODO: once daily_average_matchups() (code/0_functions.R) has been validated against real
 # multi-day MAFR/THAU data, compare global_stats(..., daily_average = FALSE) against
 # global_stats(..., daily_average = TRUE) here, per site and sensor family, to quantify how
 # much the day-averaging step changes the headline Error/Bias values, and to check whether it

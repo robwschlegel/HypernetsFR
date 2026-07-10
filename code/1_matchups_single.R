@@ -1,10 +1,5 @@
 # code/1_matchups_single.R
 # Compute per-file (individual) match-up statistics for every sensor family.
-#
-# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
-#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
-# (renamed/split 2026-07-10 from the former single code/matchups.R -- see
-# manuscript/track-changes.md)
 
 
 # Setup -------------------------------------------------------------------
@@ -38,5 +33,3 @@ matchup_sat_uniq <- matchup_single_all |>
   distinct() |>
   summarise(sat_count = n(), .by = "sensor_X")
 
-# Next steps: source("code/2_outliers.R"), then source("code/3_sensitivity.R"),
-# then source("code/4_matchups_global.R") -- see CLAUDE.md for the full pipeline order.

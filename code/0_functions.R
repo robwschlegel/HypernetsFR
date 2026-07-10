@@ -1,9 +1,5 @@
 # code/0_functions.R
 # Code shared across the project. Sourced by every other script; never run standalone.
-#
-# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
-#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
-# (renamed 2026-07-10 from code/functions.R -- see manuscript/track-changes.md)
 
 
 # Libraries ---------------------------------------------------------------
@@ -361,7 +357,7 @@ site_diff_time_limit <- function(site_name){
 # Average multiple same-day HYPERNETS-scan-vs-satellite-overpass matchups into one representative
 # daily value per wavelength, for use at the global-stats stage. Added 2026-07-10 per project
 # decision: rather than simply tightening/loosening the diff_time filter per site, matchups that pass
-# the site-specific site_diff_time_limit() threshold should be temporally averaged per day before
+# the site-specific site_diff_time_limit() threshold should be averaged per day before
 # global per-wavelength statistics are computed, rather than treated as independent data points --
 # this also directly addresses the "not all matchups are independent of one another" caveat raised in
 # the Tara "in review" paper's Conclusion.
@@ -986,16 +982,24 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = FA
 
 # Plot data based on wavelength group
 plot_matchup_nm <- function(df, x_sensor, y_sensor){
-  df |>
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
+  colours_nm <- colour_nm_func(y_sensor)
+  df_prep <- df |> filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor)))
+  if(y_sensor == "PACE"){
+    df_prep <- df_prep |>
+      mutate(wavelength = cut(wavelength,
+                              breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050),
+                              labels = names(colours_nm),
+                              include.lowest = TRUE, right = TRUE))
+  }
+  df_prep |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = as.factor(wavelength))) +
+    geom_point(aes(colour = as.factor(wavelength)), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
          x = paste("RHOW", x_sensor),
          y = paste("RHOW", y_sensor),
          colour = "Wavelength (nm)") +
-    scale_colour_manual(values = colour_nm_func(y_sensor))  +
+    scale_colour_manual(values = colours_nm) +
     theme_minimal() +
     theme(panel.border = element_rect(fill = NA, color = "black"),
           legend.position = "bottom")
@@ -1026,7 +1030,7 @@ plot_matchup_dateTime <- function(df, x_sensor, y_sensor, date_filter){
     mutate(date = as.Date(dateTime_X)) |>
     filter(date == as.Date(date_filter)) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = dateTime_X)) +
+    geom_point(aes(colour = dateTime_X), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"-", date_filter),
          x = paste("RHOW", x_sensor),
@@ -1042,7 +1046,7 @@ plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
   pl_Error <- df |>
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = Error_50)) +
+    geom_point(aes(colour = Error_50), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     scale_colour_viridis_c(option = "D") +
     labs(title = paste(x_sensor, "vs", y_sensor,"- Error"),
@@ -1055,7 +1059,7 @@ plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
   pl_Bias <- df |>
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = Bias_50)) +
+    geom_point(aes(colour = Bias_50), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     scale_colour_viridis_c(option = "A") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"- Bias"),
@@ -1326,10 +1330,9 @@ plot_global_nm <- function(df, sensor_Y){
   if(sensor_Y == "PACE"){
     df_prep <- df_prep |> 
       mutate(wavelength = cut(wavelength,
-                                          breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 
-                                                     800, 900, 1050),
-                                          labels = names(colours_nm),
-                                  include.lowest = TRUE, right = TRUE), .after = "wavelength")
+                              breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050),
+                              labels = names(colours_nm),
+                              include.lowest = TRUE, right = TRUE), .after = "wavelength")
   }
 
   # Determine rows for legend items

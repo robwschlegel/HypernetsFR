@@ -8,10 +8,9 @@
 
 # Setup -------------------------------------------------------------------
 
-source("code/0_functions.r")
+source("code/0_functions.R")
 
-# Outlier gating (standardised 2026-07-10; see manuscript/track-changes.md)
-# --------------------------------------------------------------------------
+# Outlier gating
 # For now every sensor uses ONE gate only: the satellite pixel-variance CV
 # check (sat_var_check(), cv_limit = 30). The previously-used Error_50 >= 100%
 # gate, and a prospective RMSE-based gate, are left in below as commented-out
@@ -21,9 +20,7 @@ error_50_limit <- 100 # TODO (placeholder, currently unused): may reinstate an E
 rmse_limit <- NA # TODO (placeholder, currently unused): determine a principled RMSE-based threshold (units: RHOW) before enabling
 
 
-# Satellite Outliers -------------------------------------------------------
-
-## MODIS -------------------------------------------------------------------
+# MODIS -------------------------------------------------------------------
 
 # Load processed in situ matchups
 matchup_MODIS <- read_csv("output/matchup_stats_RHOW_MODIS.csv") |>
@@ -67,7 +64,7 @@ filter_join_MODIS <- right_join(join_MODIS, filter_MODIS)
 clean_join_MODIS <- anti_join(join_MODIS, filter_MODIS)
 
 # Plot matchups by date
-plot_matchup_date(filter_join_MODIS, "Hyp", "AQUA")
+plot_matchup_date(clean_join_MODIS, "Hyp", "AQUA")
 
 # Plot all wavelength matchups
 plot_matchup_nm(join_MODIS, "Hyp", "AQUA")
@@ -84,7 +81,7 @@ matchup_VIIRS <- read_csv("output/matchup_stats_RHOW_VIIRS.csv") |>
 
 # VIIRS files
 file_list_VIIRS <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/",
-                                         pattern = "VIIRS", full.names = TRUE, recursive = TRUE), pattern = "csv")
+                                         pattern = "SNPP|JPSS1|JPSS2", full.names = TRUE, recursive = TRUE), pattern = "csv")
 
 # Load base W_nm matchup values
 base_VIIRS <- plyr::ldply(file_list_VIIRS, load_matchup_long, .parallel = TRUE)
@@ -212,7 +209,7 @@ filter_var_OCI <- filter(matchup_OCI, file_name %in% basename(sat_var_filt_OCI$f
 # Plot matchup by Error + Bias
 # NB: PACE_V30 is visually the least similar, so using this platform as the reference; the
 # filtering below still screens outliers across all three PACE versions (V2, V30, V31)
-plot_matchup_Error_Bias(join_OCI, "Hyp", "PACE_V30")
+plot_matchup_Error_Bias(join_OCI, "Hyp", "PACE")
 
 # Standardised outlier gate: CV only (see cv_limit_choice above)
 filter_OCI <- filter_var_OCI
@@ -232,19 +229,20 @@ filter_join_OCI <- right_join(join_OCI, filter_OCI)
 clean_join_OCI <- anti_join(join_OCI, filter_OCI)
 
 # Plot matchups by date
-plot_matchup_date(filter_join_OCI, "Hyp", "PACE_V30")
+plot_matchup_date(filter_join_OCI, "Hyp", "PACE")
 
 # Plot all wavelength matchups
-plot_matchup_nm(join_OCI, "Hyp", "PACE_V30")
-plot_matchup_nm(filter_join_OCI, "Hyp", "PACE_V30")
-plot_matchup_nm(clean_join_OCI, "Hyp", "PACE_V30")
+plot_matchup_nm(join_OCI, "Hyp", "PACE")
+plot_matchup_nm(filter_join_OCI, "Hyp", "PACE")
+plot_matchup_nm(clean_join_OCI, "Hyp", "PACE")
 
 
 ## Combine satellite outliers ----------------------------------------------
 
 # Stack all filtered data.frames with file names that appear to be outliers
 satellite_outliers <- rbind(filter_OLCI, filter_VIIRS, filter_MODIS, filter_OCI) |>
-  dplyr::select(file_name, sensor_X, sensor_Y, var_name, comp_sensors,
+  dplyr::select(file_name, sensor_X, sensor_Y, comp_sensors,
                 dateTime_X, dateTime_Y, Slope_II, Error_50, Bias_50, val_filter) |>
   distinct()
 write_csv(satellite_outliers, "meta/satellite_outliers.csv")
+
