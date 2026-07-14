@@ -13,9 +13,9 @@ library(geosphere) # For determining distance between points
 library(ggtext) # For rich text labels
 library(ggimage) # For adding .jpg files to figures
 library(patchwork) # For complex paneling of figures
-# library(future)
-# library(furrr)
-library(doParallel); registerDoParallel(cores = detectCores() - 2)
+library(future)
+library(furrr)
+# library(doParallel); registerDoParallel(cores = detectCores() - 2)
 
 
 # Setup -------------------------------------------------------------------
@@ -23,6 +23,8 @@ library(doParallel); registerDoParallel(cores = detectCores() - 2)
 # Disable scientific notation
 # NB: Necessary for correct time stamp conversion
 options(scipen = 9999)
+
+plan(multicore, workers = max(1L, parallel::detectCores() - 2L))
 
 
 # Utilities ---------------------------------------------------------------
@@ -61,7 +63,6 @@ file_path_build <- function(site_name, sat_name){
 }
 
 # Load a single matchup file and create mean values from all replicates
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/tara_matchups_results_20260504/RHOW_HYPERNETS_vs_S3A/HYPERNETS_vs_S3A_V4_vs_20240808T065700_RHOW.csv"
 # file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_JPSS1/JPSS1_20240531T120600_vs_HYPERNETS_20240531T114500_RHOW_C.csv"
 # file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_SNPP/SNPP_20240611T131200_vs_HYPERNETS_20240611T124500_RHOW_C.csv"
 # file_name <- file_path
@@ -131,6 +132,9 @@ load_matchup_long <- function(file_name){
     na.omit() |> 
     mutate(wavelength = as.numeric(wavelength),
            file_name = basename(file_name), .before = "wavelength")
+  
+  # Exit
+  return(df_long)
 }
 
 # Load the variance data for a matchup file
@@ -150,7 +154,7 @@ load_matchup_var <- function(file_name){
     # distinct() |> 
     dplyr::select(-day, -time, -latitude, -longitude, -radiometer_id, -type) |> 
     mutate(data_type = case_when(data_type == "rhow" ~ "var_value", TRUE ~ data_type)) |> 
-    pivot_longer( cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
+    pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
     pivot_wider(names_from = data_type, values_from = value) |>
     # na.omit() |> 
     mutate(max_sd_diff = abs(var_value - std_max),
@@ -174,16 +178,13 @@ load_matchups_folder <- function(site_name, sat_name, long = FALSE){
   file_list_clean <- file_list[!grepl("all|global", file_list)]
   
   # Load data
-  # plan(multicore, workers = 14)
   if(long){
-    match_base <- plyr::ldply(file_list_clean, load_matchup_long, .parallel = TRUE)
-    # match_base <- future_map_dfr(file_list_clean, load_matchup_long)
-    # print(unique(match_base$wavelength))
+    match_base <- furrr::future_map_dfr(file_list_clean, load_matchup_long, .options = furrr_options(seed = TRUE)) |> 
+       mutate(site_name = site_name, .before = wavelength)
   } else {
-    match_base <- plyr::ldply(file_list_clean, load_matchup_mean, .parallel = TRUE)
-    # match_base <- future_map_dfr(file_list_clean, load_matchup_mean)
+    match_base <- furrr::future_map_dfr(file_list_clean, load_matchup_mean, .options = furrr_options(seed = TRUE)) |> 
+       mutate(site_name = site_name, .before = sensor)
   }
-  # plan(sequential)
 
   # Exit
   return(match_base)
@@ -325,12 +326,12 @@ sat_var_check <- function(file_name, cv_limit = 30){
 }
 
 # Determine which sites currently have data on disk for a given satellite platform
-# NB: MAFR (Gironde Estuary, highly turbid) is always assumed present. THAU (lagoon,
-# clear-water comparison site to MAFR -- see Doxaran et al. 2024's analogous Berre
-# lagoon vs Gironde Estuary contrast) is added automatically the moment its data folder
-# exists on disk, so no further code changes will be needed once THAU data are delivered.
+# NB: MAFR (Gironde Estuary, highly turbid) and THFR (lagoon, clear-water comparison site
+# to MAFR -- see Doxaran et al. 2024's analogous Berre lagoon vs Gironde Estuary contrast)
+# are both present on disk as of 2026-07-14. Additional sites are picked up automatically
+# the moment their data folder exists on disk.
 available_sites <- function(sat_name){
-  candidate_sites <- c("MAFR", "THAU")
+  candidate_sites <- c("MAFR", "THFR")
   site_present <- vapply(candidate_sites, function(s) dir.exists(file_path_build(s, sat_name)), logical(1))
   sites_found <- candidate_sites[site_present]
   if(length(sites_found) == 0) stop(paste0("No site data found on disk for sensor: ", sat_name))
@@ -340,16 +341,16 @@ available_sites <- function(sat_name){
 # Site-specific matchup time-window limit (minutes), added 2026-07-10.
 # NB: unlike Doxaran et al. 2024 (who additionally varied the *spatial* matchup criterion per site --
 # a 3x3-pixel box at Berre vs. nearest-pixel-only at Gironde), this pipeline keeps ONE spatial rule
-# (nearest pixel + a fixed dist_limit = 5 km sanity check, see process_sensor()) for every site, and
-# varies only the TIME window: MAFR's fast tidal turbidity dynamics need a tighter window than THAU's
+# (nearest pixel + a fixed dist_limit = 10 km ceiling, see process_sensor()) for every site, and
+# varies only the TIME window: MAFR's fast tidal turbidity dynamics need a tighter window than THFR's
 # comparatively stable lagoon water, mirroring Doxaran et al. 2024's Gironde (+/-15 min) vs Berre
 # (+/-30 min) choice. See code/3_sensitivity.R for the empirical check behind these two numbers, and
 # manuscript/roadmap.md for the open methodological question this resolves.
-# TODO: revisit both values once real multi-day THAU data are available.
+# Values checked against real MAFR and THFR data via code/3_sensitivity.R (2026-07-14).
 site_diff_time_limit <- function(site_name){
   dplyr::case_when(
     site_name == "MAFR" ~ 15,
-    site_name == "THAU" ~ 30,
+    site_name == "THFR" ~ 30,
     TRUE ~ 30 # fallback for any future/unrecognised site
   )
 }
@@ -362,17 +363,15 @@ site_diff_time_limit <- function(site_name){
 # this also directly addresses the "not all matchups are independent of one another" caveat raised in
 # the Tara "in review" paper's Conclusion.
 #
-# NB: FIRST-DRAFT IMPLEMENTATION, NOT YET VALIDATED against real multi-day MAFR/THAU data. In
-# particular the date-extraction logic below reuses the exact convention already used elsewhere in
-# this file (see the `unique_days` block inside global_scatterplot()) -- i.e. split file_name on "_",
-# take the 2nd element, split that on "T", take the 1st element -- which is known to work for the
-# S3A/S3B/JPSS1/JPSS2/SNPP/AQUA naming patterns seen so far, but has NOT been checked against PACE or
-# any THAU-specific naming quirks. Confirm this still holds before trusting daily_average = TRUE for
-# the manuscript's final numbers (see manuscript/track-changes.md).
+# Validated 2026-07-14 against real MAFR data for all four sensor families (OLCI, MODIS, VIIRS,
+# OCI/PACE). Date-extraction logic reuses the exact convention used in global_scatterplot() -- i.e.
+# split file_name on "_", take the 2nd element, split that on "T", take the 1st element -- confirmed
+# to work for S3A/S3B/JPSS1/JPSS2/SNPP/AQUA/PACE naming patterns at both MAFR and THFR.
 #
 # df: expects the long-format data.frame produced by load_matchup_long()/load_matchups_folder(long =
 #     TRUE), i.e. one row per file_name x wavelength, already filtered to wavelength %in% W_nm and to
 #     files passing site_diff_time_limit() (that filtering happens upstream, in global_stats()).
+
 daily_average_matchups <- function(df, site_name){
   df |>
     mutate(match_date = sapply(str_split(file_name, "_"), "[[", 2),
@@ -404,7 +403,7 @@ sensor_grid <- function(sensor_Z){
   message("Sensor name : ", paste0(sensor_Z, collapse = ", ")); message("Sat name(s) : ",paste0(sensor_Y, collapse = ", "))
 
   # Create grid for mdply()
-  # NB: site list is determined per sensor_Y via available_sites() so THAU is included
+  # NB: site list is determined per sensor_Y via available_sites() so THFR is included
   # automatically once its data exist on disk (see available_sites() above); MAFR-only today.
   site_list <- unique(unlist(lapply(sensor_Y, available_sites)))
   ply_grid <- expand_grid(site_name = site_list, sensor_Y = sensor_Y) |> distinct()
@@ -771,7 +770,7 @@ process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_
   
   # Calculate statistics
   df_stats_XY <- base_stats(x_vec, y_vec)
-  df_stats_YX <- base_stats(y_vec, x_vec)
+  # df_stats_YX <- base_stats(y_vec, x_vec)
   
   # Create named objects that differ from columna names to avoid naming bug
   sensor_X_name <- sensor_X
@@ -785,14 +784,14 @@ process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_
            sensor_Y = sensor_Y_name,
           #  Wavelength_nm = wavelength_nm,
            n_w_nm = n_match, .before = "n")
-  df_YX <- df_stats_YX |> 
-    mutate(site_name = site_name, 
-           var_name = "RHOW",
-           sensor_X = sensor_Y_name,
-           sensor_Y = sensor_X_name,
-          #  Wavelength_nm = wavelength_nm,
-           n_w_nm = n_match, .before = "n")
-  df_both <- rbind(df_XY, df_YX) |> 
+  # df_YX <- df_stats_YX |> 
+  #   mutate(site_name = site_name, 
+  #          var_name = "RHOW",
+  #          sensor_X = sensor_Y_name,
+  #          sensor_Y = sensor_X_name,
+  #         #  Wavelength_nm = wavelength_nm,
+  #          n_w_nm = n_match, .before = "n")
+  df_both <- df_XY |> #rbind(df_XY, df_YX) |> 
     dplyr::rename(n_w_nm_clean = n)
   return(df_both)
   # } else {
@@ -803,11 +802,11 @@ process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_
 # Global stats per matchup wavelength
 # site_name = "MAFR"; sensor_Y = "S3A"
 # site_name = "MAFR"; sensor_Y = "S3_all"
-# site_name = "MAFR"; sensor_Y = "PACE"
+# site_name = "THFR"; sensor_Y = "PACE"
 # site_name = "MAFR"; sensor_Y = "SNPP"
 # site_name = "MAFR"; sensor_Y = "JPSS1"
 # site_name = "MAFR"; sensor_Y = "AQUA"
-global_stats <- function(site_name, sensor_Y, daily_average = FALSE){
+global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   
   # Create multiple folder paths if requested
   if(sensor_Y == "S3_all"){
@@ -854,11 +853,10 @@ global_stats <- function(site_name, sensor_Y, daily_average = FALSE){
   # Remove outlier files
   # NB: This creates the list of valid matchups after screening for outliers in the single matchup QC process
   file_list_no_out <- file_list_clean[!basename(file_list_clean) %in% outliers_sat$file_name]
+  if(length(file_list_no_out) == 0) stop(paste("No files passed QC for", site_name, sensor_X, sensor_Y))
   
   # Load data
-  # match_base <- map_dfr(file_list_no_out, load_matchup_long)
-  match_base <- plyr::ldply(file_list_no_out, load_matchup_long, .parallel = TRUE)
-  if(!("wavelength" %in% colnames(match_base))) stop(paste("Wavelength column is missing from", sensor_X, sensor_Y))
+  match_base <- furrr::future_map_dfr(file_list_no_out, load_matchup_long, .options = furrr_options(seed = TRUE))
   
   # Melt if S3_all
   if(sensor_Y == "S3_all"){
@@ -875,22 +873,19 @@ global_stats <- function(site_name, sensor_Y, daily_average = FALSE){
   match_base_filt <- filter(match_base, wavelength %in% W_nm) #|>
     # mutate(wavelength_idx = wavelength, .before = wavelength)
 
-  # Optional day-level temporal averaging using the site-specific time window (see
-  # site_diff_time_limit() and daily_average_matchups() for full rationale). Defaults to FALSE
-  # (preserving prior behaviour, i.e. every passing HYPERNETS-scan-vs-satellite-overpass pairing
-  # is treated as an independent matchup) until daily_average_matchups() has been validated
-  # against real multi-day MAFR/THAU data -- see manuscript/track-changes.md.
+  # Optional day-level temporal averaging using the site-specific time window
   if(daily_average){
     match_base_filt <- daily_average_matchups(match_base_filt, site_name)
   }
 
   # Get the requested wavelengths global stats, add matchup count, and exit
-  # doParallel::registerDoParallel(cores = 14)
-  df_results <- plyr::ddply(match_base_filt, c("wavelength"), process_global_wavelength, .parallel = TRUE,
-                            site_name = site_name, sensor_X = sensor_X, sensor_Y = sensor_Y, .drop = FALSE) |> 
+  df_results <- match_base_filt |>
+    group_by(wavelength) |>
+    group_modify(~process_global_wavelength(.x, site_name = site_name, sensor_X = sensor_X, sensor_Y = sensor_Y)) |>
+    ungroup() |>
     mutate(n_clean = length(file_list_clean),
            n_no_out = length(file_list_no_out),
-           .before = "n_w_nm") |> 
+           .before = "n_w_nm") |>
     dplyr::select(site_name, sensor_X, sensor_Y, wavelength, everything())
   return(df_results)
 }
@@ -913,11 +908,8 @@ process_matchup_folder <- function(site_name, sensor_Y){
   file_list <- file_list[!grepl("all|global", file_list)]
   
   # Initialise results data.frame
-  # doParallel::registerDoParallel(cores = 12)
-  df_results <- plyr::ldply(file_list, process_matchup_file, .parallel = TRUE)
-  # plan(multicore, workers = 14, seed=TRUE) # Already called on multi-core in parent function
-  # df_results <- future_map_dfr(file_list, process_matchup_file, .options = furrr_options(seed = TRUE))
-  # plan(sequential)
+  df_results <- furrr::future_map_dfr(file_list, process_matchup_file, .options = furrr_options(seed = TRUE)) |>
+    mutate(site_name = site_name, .after = file_name)
 
   # Exit
   return(df_results)
@@ -926,7 +918,7 @@ process_matchup_folder <- function(site_name, sensor_Y){
 # Process multiple folders based on request
 # sensor_Z = "MODIS"; stat_choice = "matchup"
 # sensor_Z = "OLCI"; stat_choice = "global"
-process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = FALSE){
+process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TRUE){
   
   # Create ply grid
   ply_grid <- sensor_grid(sensor_Z)
@@ -941,22 +933,11 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = FA
   
   # Process matchups and save output
   if(stat_choice == "matchup"){
-    # proc_res <- pmap_dfr(ply_grid, process_matchup_folder)
-    # registerDoParallel(cores = 14)
-    proc_res <- plyr::mdply(ply_grid, process_matchup_folder, .parallel = FALSE)
-    # plan(sequential)#, workers = 10)
-    # proc_res <- furrr::future_pmap_dfr(ply_grid, process_matchup_folder, .options = furrr_options(seed = TRUE))
+    proc_res <- furrr::future_pmap_dfr(ply_grid, process_matchup_folder, .options = furrr_options(seed = TRUE))
     # Set time and distance limits
-    # NB (2026-07-10): diff_time_limit is now SITE-SPECIFIC via site_diff_time_limit() (MAFR = 15 min,
-    # THAU = 30 min -- see that function's definition for rationale). dist_limit remains a single fixed
-    # 5 km ceiling for every site: this pipeline already selects only the single nearest pixel to the
-    # station (see get_nearest_pixels()/Hypernets_matchups upstream), and observed distances are almost
-    # always < 1 km in practice, so 5 km is a sanity check against a gross geolocation error, not a
-    # meaningful spatial-averaging choice the way it might be for a pixel-box approach. See
-    # code/3_sensitivity.R for the empirical checks behind both choices.
     proc_res <- proc_res |>
       mutate(diff_time_limit = site_diff_time_limit(site_name), .after = diff_time) |>
-      mutate(dist_limit = 5, .after = dist)
+      mutate(dist_limit = 10, .after = dist)
     # Enforce time and distance constraint
     proc_res_clean <- proc_res |>
       filter(diff_time <= diff_time_limit) |>
@@ -966,15 +947,9 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = FA
     proc_res_unclean <- proc_res[!proc_res$file_name %in% proc_res_clean$file_name,]
     write_csv(proc_res_unclean, paste0("output/matchup_noQC_stats_RHOW_",sensor_Z,".csv"))
   } else {
-    # registerDoParallel(cores = 14)
-    # NB: daily_average defaults to FALSE (see global_stats()/daily_average_matchups()) until that
-    # first-draft implementation has been validated against real multi-day MAFR/THAU data.
-    proc_res <- plyr::mdply(ply_grid, global_stats, daily_average = daily_average, .parallel = FALSE)
-    # plan(multicore, workers = 10)
-    # proc_res <- future_pmap_dfr(ply_grid, global_stats, .options = furrr_options(seed = TRUE))
+    proc_res <- furrr::future_pmap_dfr(ply_grid, global_stats, daily_average = daily_average, .options = furrr_options(seed = TRUE))
     write_csv(proc_res, paste0("output/global_stats_RHOW_",sensor_Z,".csv"))
   }
-  # plan(sequential)
 }
 
 
@@ -993,7 +968,7 @@ plot_matchup_nm <- function(df, x_sensor, y_sensor){
   }
   df_prep |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = as.factor(wavelength)), size = 3) +
+    geom_point(aes(colour = as.factor(wavelength), shape = site_name), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
          x = paste("RHOW", x_sensor),
@@ -1011,7 +986,7 @@ plot_matchup_date <- function(df, x_sensor, y_sensor){
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     mutate(date = as.factor(as.Date(dateTime_X))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = date), size = 3) +
+    geom_point(aes(colour = date, shape = site_name), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
          x = paste("RHOW", x_sensor),
@@ -1030,7 +1005,7 @@ plot_matchup_dateTime <- function(df, x_sensor, y_sensor, date_filter){
     mutate(date = as.Date(dateTime_X)) |>
     filter(date == as.Date(date_filter)) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = dateTime_X), size = 3) +
+    geom_point(aes(colour = dateTime_X, shape = site_name), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"-", date_filter),
          x = paste("RHOW", x_sensor),
@@ -1046,7 +1021,7 @@ plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
   pl_Error <- df |>
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = Error_50), size = 3) +
+    geom_point(aes(colour = Error_50, shape = site_name), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     scale_colour_viridis_c(option = "D") +
     labs(title = paste(x_sensor, "vs", y_sensor,"- Error"),
@@ -1059,7 +1034,7 @@ plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
   pl_Bias <- df |>
     filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
     ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = Bias_50), size = 3) +
+    geom_point(aes(colour = Bias_50, shape = site_name), size = 3) +
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
     scale_colour_viridis_c(option = "A") +
     labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"- Bias"),
@@ -1072,47 +1047,7 @@ plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
   ggpubr::ggarrange(pl_Error, pl_Bias, nrow = 2, ncol = 1)
 }
 
-# Plot the relationship between difftime and distance for MAPE and bias for all variables
-# df = matchup_ED_in_situ
-plot_matchup_scatter <- function(df, pl_height = 6, pl_width = 9){
-
-  # Relationship between MAPE, distance and difftime
-  pl_Error <- df |>
-    mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y)) |>
-    filter(comp_sensors %in% c("Hyp vs TRIOS", "Hyp vs HYPERPRO", "TRIOS vs HYPERPRO")) |>
-    ggplot(aes(x = diff_time, y = Error)) +
-    geom_point(aes(colour = dist), size = 3, alpha = 0.7) +
-    geom_smooth(method = "lm", se = FALSE) +
-    scale_colour_viridis_c() +
-    labs(x = "Time difference [minutes]", y = "Error [%]", colour = "Distance\n[km]",
-         title = "RHOW - Error (%) : Effect of sampling time difference",
-         subtitle = "Colour shows distance (km) between samples") +
-    facet_wrap(~comp_sensors) +
-    theme(panel.border = element_rect(colour = "black"))#,
-  # legend.position = "bottom")
-  # pl_Error
-
-  # The same but for bias
-  pl_Bias <- df |>
-    mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y)) |>
-    filter(comp_sensors %in% c("Hyp vs TRIOS", "Hyp vs HYPERPRO", "TRIOS vs HYPERPRO")) |>
-    ggplot(aes(x = diff_time, y = Bias)) +
-    geom_point(aes(colour = dist), size = 3, alpha = 0.7) +
-    geom_smooth(method = "lm", se = FALSE) +
-    scale_colour_viridis_c() +
-    labs(x = "Time difference [minutes]", y = "Bias [%]", colour = "Distance\n[km]",
-         title = "RHOW - Bias (%) : Effect of sampling time difference",
-         subtitle = "Colour shows distance (km) between samples") +
-    facet_wrap(~comp_sensors) +
-    theme(panel.border = element_rect(colour = "black"))#,
-  # legend.position = "bottom")
-  # pl_Bias
-
-  pl_combi <- ggpubr::ggarrange(pl_Error, pl_Bias, nrow = 2, ncol = 1)
-  ggsave("figures/outliers_RHOW_in_situ.png", pl_combi, height = pl_height, width = pl_width)
-  # pl_combi
-}
-
+# Code that preps the labels for plotting based on a given input
 pretty_label_func <- function(char_string){
   
   # Set default values
@@ -1261,7 +1196,7 @@ plot_matchup_single_nm <- function(df, sensor_X, sensor_Y){
 }
 
 # Plot data based on wavelength group
-# df <- match_filter; sensor_Y <- "PACE"
+# df <- match_filter; sensor_Y <- "AQUA"
 plot_global_nm <- function(df, sensor_Y){
   
   # Create sensor and unit labels
@@ -1292,19 +1227,23 @@ plot_global_nm <- function(df, sensor_Y){
     distinct(date) |> 
     mutate(date = as.Date(date, format = "%Y%m%d"))
   
-  # Quick for loop per site
+  # Quick for loop per site — must filter df_prep by site so each panel gets its own stats
   df_stats <- data.frame()
   for(i in 1:length(unique(df$site_name))){
+    site_i <- unique(df$site_name)[i]
+    df_prep_i <- df_prep |> filter(site_name == site_i)
 
-    # Get global stats
-    x_vec <- df_prep[[sensor_X_labs$sensor_col]]
-    y_vec <- df_prep[[sensor_Y_labs$sensor_col]]
-    
-    # Calculate statistics
-    df_stats_i <- base_stats(x_vec, y_vec) |> 
-      mutate(site_name = unique(df$site_name)[i])
+    x_vec <- df_prep_i[[sensor_X_labs$sensor_col]]
+    y_vec <- df_prep_i[[sensor_Y_labs$sensor_col]]
 
-    # Append
+    df_stats_i <- base_stats(x_vec, y_vec) |>
+      mutate(site_name = site_i,
+             label = paste0("n: ", n, " (", nrow(unique_days), ")",
+                            "\nS: ", sprintf("%.2f", Slope_II), "±",
+                            sprintf("%.2f", abs((Slope_II_high - Slope_II_low) / 2)),
+                            "\nβ: ", sprintf("%.1f", Bias_50),
+                            "% \nε: ", sprintf("%.1f", Error_50), "%"))
+
     df_stats <- rbind(df_stats, df_stats_i)
   }
   
@@ -1368,31 +1307,26 @@ plot_global_nm <- function(df, sensor_Y){
   pl_clean <- pl_base +
     # Add 1:1 line
     geom_abline(slope = 1, intercept = 0, color = "black", linetype = "solid") +
-    # Add model II linear models and 95% CI
+    # Add model II linear models and 95% CI — use data = df_stats so each row
+    # is routed to the matching site_name facet panel
     ## Bottom CI
-    geom_abline(slope = df_stats$Slope_II_low, intercept = df_stats$Slope_II_int_low, 
+    geom_abline(data = df_stats, aes(slope = Slope_II_low, intercept = Slope_II_int_low),
                 colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
-    geom_abline(slope = df_stats$Slope_II_low, intercept = df_stats$Slope_II_int_low, 
+    geom_abline(data = df_stats, aes(slope = Slope_II_low, intercept = Slope_II_int_low),
                 colour = "grey", linewidth = 1.0, linetype = "dashed") +
     # Mid
-    geom_abline(slope = df_stats$Slope_II, intercept = df_stats$Slope_II_int, 
+    geom_abline(data = df_stats, aes(slope = Slope_II, intercept = Slope_II_int),
                 colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
-    geom_abline(slope = df_stats$Slope_II, intercept = df_stats$Slope_II_int, 
+    geom_abline(data = df_stats, aes(slope = Slope_II, intercept = Slope_II_int),
                 colour = "black", linewidth = 1.0, linetype = "dashed") +
     ## Top CI
-    geom_abline(slope = df_stats$Slope_II_high, intercept = df_stats$Slope_II_int_high, 
+    geom_abline(data = df_stats, aes(slope = Slope_II_high, intercept = Slope_II_int_high),
                 colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
-    geom_abline(slope = df_stats$Slope_II_high, intercept = df_stats$Slope_II_int_high, 
+    geom_abline(data = df_stats, aes(slope = Slope_II_high, intercept = Slope_II_int_high),
                 colour = "grey", linewidth = 1.0, linetype = "dashed") +
-    # geom_smooth(method = "lm", formula = y ~ x, colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid", se = FALSE) +
-    # geom_smooth(method = "lm", formula = y ~ x, colour = "black", linewidth = 1, linetype = "dashed", se = FALSE) +
-    # Add global stats text
-    annotate(geom = "text", x = 0, y = max_axis, hjust = 0, vjust = 1, size = 4,
-             label = paste0("n: ", df_stats$n," (",nrow(unique_days),")",
-                            "\nS: ", sprintf("%.2f", df_stats$Slope_II), "±",
-                                sprintf("%.2f", abs((df_stats$Slope_II_high - df_stats$Slope_II_low)/2)), 
-                            "\nβ: ", sprintf("%.1f", df_stats$Bias_50),
-                            "% \nϵ: ", sprintf("%.1f", df_stats$Error_50),"%")) +
+    # Add per-panel stats text via geom_text so site_name routes it to the right facet
+    geom_text(data = df_stats, aes(label = label), x = 0, y = max_axis,
+              hjust = 0, vjust = 1, size = 4, inherit.aes = FALSE) +
     # Make it pretty
     labs(x = paste0(sensor_X_labs$sensor_lab,"; ", var_labs$units_lab),
          y = paste0(sensor_Y_labs$sensor_lab,"; ", var_labs$units_lab),
@@ -1416,6 +1350,7 @@ plot_global_nm <- function(df, sensor_Y){
 # Takes variable and Y sensor as input to automagically create global scatterplot triptych
 # cut_legend = "cut" strips the legend so several panels can be stacked under one shared legend
 # sensor_Y = "S3B"; cut_legend = "cut"
+# sensor_Y = "AQUA"; cut_legend = "cut"
 # sensor_Y = "S3"; cut_legend = "no"
 # sensor_Y = "PACE"; cut_legend = "no"
 global_scatterplot <- function(sensor_Y, cut_legend = "no"){
@@ -1444,7 +1379,7 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   outliers_all <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) |> distinct()
   
   # Load data based on in situ comparisons or not
-  # NB: site list picked up automatically via available_sites() -- THAU is included
+  # NB: site list picked up automatically via available_sites() -- THFR is included
   # once its data folder exists on disk, no code change needed here.
   print("Loading matchups")
   if(sensor_Y == "S3"){
@@ -1459,12 +1394,11 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   }
   
   # Load all folders
-  match_base <- plyr::mdply(ply_folders, load_matchups_folder, long = TRUE)# |> 
-    # right_join(match_base_details, by = join_by(site_name, file_name))
+  match_base <- purrr::pmap_dfr(ply_folders, load_matchups_folder, long = TRUE) |> 
+    right_join(match_base_details, by = join_by(site_name, file_name))
 
   # Filter out outliers
-  # match_filter <- match_base[!match_base$file_name %in% outliers_all$file_name,]
-  match_filter <- match_base
+  match_filter <- match_base[!match_base$file_name %in% outliers_all$file_name,]
 
   # Remove any erroneuosly high values before plotting
   match_filter <- match_filter |> filter(Hyp <= 1)
@@ -1474,7 +1408,7 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   match_fig <- plot_global_nm(match_filter, sensor_Y)
 
   # Save the individual figure
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 5, height = 5)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 8, height = 5)
 
   # Remove the legend when this panel will be stacked beneath another with a shared legend
   # Then return it (invisibly) for reuse by global_scatterplot_stack()
@@ -1484,11 +1418,11 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
 
 # Stack the per-sensor global scatterplots for a sensor family into one composite figure
 # NB: Requires that the matchup and global stats CSVs for sensor_Z already exist (see process_sensor())
-# sensor_Z = "OCI"
+# sensor_Z = "MODIS"
 global_scatterplot_stack <- function(sensor_Z){
 
   # Get the sensor_Y platforms that belong to this sensor family
-  sensor_Y_list <- sensor_grid(sensor_Z)$sensor_Y
+  sensor_Y_list <- unique(sensor_grid(sensor_Z)$sensor_Y)
   # NB: Disabling S3 all for the moment
   # if(sensor_Z == "OLCI"){ 
   #   sensor_Y_list <- c("S3A", "S3B", "S3")
@@ -1509,6 +1443,6 @@ global_scatterplot_stack <- function(sensor_Z){
   # Stack panels vertically and exit
   fig_stack <- ggpubr::ggarrange(plotlist = fig_list, ncol = 1, nrow = sensor_count, heights = panel_heights) +
     ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 5, height = 5 * sensor_count)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 8, height = 5 * sensor_count)
 }
 

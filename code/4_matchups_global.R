@@ -9,19 +9,19 @@
 source("code/0_functions.R")
 
 # NB: this script assumes code/1_matchups_single.R, code/2_outliers.R, and
-# code/3_sensitivity.R have already been run andtheir outputs already exist
+# code/3_sensitivity.R have already been run and their outputs already exist
 # on disk), since global_stats() reads both.
 
 
 # Global statistics --------------------------------------------------------
 
-# daily_average = FALSE for now (see global_stats()/daily_average_matchups() in
-# code/0_functions.R) -- flip to TRUE once that first-draft implementation has been
-# validated against real multi-day MAFR/THAU data.
-process_sensor("MODIS", "global")
-process_sensor("VIIRS", "global")
-process_sensor("OLCI", "global")
-process_sensor("OCI", "global")
+process_sensor("MODIS", "global", daily_average = TRUE)
+process_sensor("VIIRS", "global", daily_average = TRUE)
+process_sensor("OLCI", "global", daily_average = TRUE)
+process_sensor("OCI", "global", daily_average = TRUE)
+
+
+# Combine all outputs ----------------------------------------------------
 
 # Load outlier reports
 outliers_sat <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) |> distinct()
@@ -39,6 +39,12 @@ global_stats_all <- map_dfr(dir("output", pattern = "global", full.names = TRUE)
                                 read_csv, show_col_types = FALSE) |>
   bind_rows(global_stats_wavelengths)
 write_csv(global_stats_all, file = "output/global_stats_all.csv")
+
+# Stop here if running from terminal
+if (!interactive()) quit(save = "no", status = 0)
+
+
+# Investigate results ----------------------------------------------------
 
 # Get matchups counts, outliers, etc.
 global_count_var_name <- global_stats_all |>

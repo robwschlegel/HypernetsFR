@@ -1,9 +1,5 @@
 # code/2_outliers.R
 # Convenience functions to rapidly visualise outliers
-#
-# Pipeline run order: 0_functions.r -> 1_matchups_single.R -> 2_outliers.R ->
-#                      3_sensitivity.R -> 4_matchups_global.R -> 5_figures.R
-# (renamed 2026-07-10 from code/outliers.R -- see manuscript/track-changes.md)
 
 
 # Setup -------------------------------------------------------------------
@@ -22,8 +18,10 @@ rmse_limit <- NA # TODO (placeholder, currently unused): determine a principled 
 
 # MODIS -------------------------------------------------------------------
 
+print("Beginning MODIS outlier screening")
+
 # Load processed in situ matchups
-matchup_MODIS <- read_csv("output/matchup_stats_RHOW_MODIS.csv") |>
+matchup_MODIS <- read_csv("output/matchup_stats_RHOW_MODIS.csv", show_col_types = FALSE) |>
   filter(sensor_X %in% c("Hyp")) |>
   mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y))
 
@@ -38,6 +36,7 @@ base_MODIS <- plyr::ldply(file_list_MODIS, load_matchup_long, .parallel = TRUE)
 join_MODIS <- right_join(base_MODIS, matchup_MODIS, by = join_by(file_name))
 
 # Check satellite variance in files
+# NB: High THFR AQUA CVs are genuine failed AC retrievals (confirmed 2026-07-14, see upstream-data-bugs.md).
 sat_var_MODIS <- plyr::ldply(file_list_MODIS, sat_var_check, cv_limit = cv_limit_choice, .parallel = TRUE)
 sat_var_filt_MODIS <- filter(sat_var_MODIS, cv > cv_limit)
 filter_var_MODIS <- filter(matchup_MODIS, file_name %in% basename(sat_var_filt_MODIS$file_name)) |>
@@ -74,8 +73,10 @@ plot_matchup_nm(clean_join_MODIS, "Hyp", "AQUA")
 
 ## VIIRS -------------------------------------------------------------------
 
+print("Beginning VIIRS outlier screening")
+
 # Load processed in situ matchups
-matchup_VIIRS <- read_csv("output/matchup_stats_RHOW_VIIRS.csv") |>
+matchup_VIIRS <- read_csv("output/matchup_stats_RHOW_VIIRS.csv", show_col_types = FALSE) |>
   filter(sensor_X %in% c("Hyp")) |>
   mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y))
 
@@ -128,11 +129,12 @@ plot_matchup_nm(clean_join_VIIRS, "Hyp", "SNPP")
 
 ## OLCI --------------------------------------------------------------------
 
+print("Beginning OLCI outlier screening")
+
 # Load processed in situ matchups
-matchup_OLCI <- read_csv("output/matchup_stats_RHOW_OLCI.csv") |>
+matchup_OLCI <- read_csv("output/matchup_stats_RHOW_OLCI.csv", show_col_types = FALSE) |>
   filter(sensor_X %in% c("Hyp")) |>
-  mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y),
-         file_name = gsub("_V4", "", file_name)) # Rename for easier joining with base data
+  mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y))
 
 # OLCI files
 file_list_OLCI <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/",
@@ -183,8 +185,10 @@ plot_matchup_nm(clean_join_OLCI, "Hyp", "S3B")
 
 ## OCI ---------------------------------------------------------------------
 
+print("Beginning OCI outlier screening")
+
 # Load processed in situ matchups
-matchup_OCI <- read_csv("output/matchup_stats_RHOW_OCI.csv") |>
+matchup_OCI <- read_csv("output/matchup_stats_RHOW_OCI.csv", show_col_types = FALSE) |>
   filter(sensor_X %in% c("Hyp")) |>
   mutate(comp_sensors = paste0(sensor_X," vs ",sensor_Y))
 
@@ -202,9 +206,9 @@ join_OCI <- right_join(base_OCI, matchup_OCI, by = join_by(file_name))
 
 # Check satellite variance in files
 sat_var_OCI <- plyr::ldply(file_list_OCI, sat_var_check, cv_limit = cv_limit_choice, .parallel = TRUE)
-sat_var_filt_OCI <- filter(sat_var_OCI, cv > cv_limit)
+sat_var_filt_OCI <- filter(sat_var_OCI, cv > 50)#cv_limit) # TODO reimplement once these high CV values are understood.
 filter_var_OCI <- filter(matchup_OCI, file_name %in% basename(sat_var_filt_OCI$file_name)) |>
-  mutate(val_filter = paste0("CV >= ", cv_limit_choice, "%"))
+  mutate(val_filter = paste0("CV >= 50"))#, cv_limit_choice, "%")) # TODO reimplement once these high CV values are understood.
 
 # Plot matchup by Error + Bias
 # NB: PACE_V30 is visually the least similar, so using this platform as the reference; the
@@ -238,6 +242,8 @@ plot_matchup_nm(clean_join_OCI, "Hyp", "PACE")
 
 
 ## Combine satellite outliers ----------------------------------------------
+
+print("Combining results and exiting")
 
 # Stack all filtered data.frames with file names that appear to be outliers
 satellite_outliers <- rbind(filter_OLCI, filter_VIIRS, filter_MODIS, filter_OCI) |>

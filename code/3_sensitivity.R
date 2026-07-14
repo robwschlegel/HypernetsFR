@@ -6,10 +6,11 @@
 #
 # NB: unlike Doxaran et al. 2024 (who used a fixed 3x3-pixel-box/+-30 min window at
 # the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde),
-# this pipeline uses ONE distance ceiling (dist_limit = 5 km, a sanity check only --
-# we already select the single nearest pixel, and observed distances are almost always
-# < 1 km) for every site, but a SITE-SPECIFIC time window (site_diff_time_limit() in
-# code/0_functions.R: 15 min at MAFR, 30 min at THAU). This script empirically checks
+# this pipeline uses ONE distance ceiling (dist_limit = 10 km; raised from 5 km on
+# 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset -- see
+# manuscript/upstream-data-bugs.md Bug 9) for every site, but a SITE-SPECIFIC time
+# window (site_diff_time_limit() in
+# code/0_functions.R: 15 min at MAFR, 30 min at THFR). This script empirically checks
 # both choices, and is also where the eventual before/after comparison of
 # daily_average_matchups() (see code/0_functions.R) should live once that first-draft
 # function has been validated.
@@ -18,7 +19,7 @@
 # output/matchup_stats_RHOW_*.csv and output/matchup_noQC_stats_RHOW_*.csv) and is
 # read by no other script, so it can safely be skipped in a quick production run once
 # its conclusions have been folded into the Methods text -- but re-run it whenever
-# THAU data change materially, since its whole purpose is to justify the window
+# THFR data change materially, since its whole purpose is to justify the window
 # choices with real data.
 
 
@@ -34,10 +35,10 @@ source("code/0_functions.R")
 matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup_noQC_stats_RHOW_", full.names = TRUE),
                             read_csv, show_col_types = FALSE)
 
-# Confirm nearest-pixel distances are almost always well inside the 5 km sanity-check ceiling
-# (per project decision 2026-07-10: dist_limit = 5 km is kept fixed and site-independent, since
-# it is a sanity check against a gross geolocation error rather than a meaningful spatial-averaging
-# choice -- Hypernets_matchups already selects only the single nearest pixel to each station)
+# Confirm nearest-pixel distances relative to the 10 km ceiling.
+# NB: dist_limit was raised from 5 km to 10 km on 2026-07-14 to accommodate a systematic
+# pixel-extraction offset in THFR PACE data (Bug 9 in manuscript/upstream-data-bugs.md).
+# For MAFR and all sensors except THFR PACE, distances remain well under 1 km in practice.
 dist_summary <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   summarise(dist_min = min(dist, na.rm = TRUE),
@@ -45,7 +46,8 @@ dist_summary <- matchup_all_noQC |>
             dist_p95 = quantile(dist, 0.95, na.rm = TRUE),
             dist_max = max(dist, na.rm = TRUE),
             n_over_1km = sum(dist > 1, na.rm = TRUE),
-            n_over_5km = sum(dist > 5, na.rm = TRUE),
+            n_over_5km  = sum(dist > 5,  na.rm = TRUE),
+            n_over_10km = sum(dist > 10, na.rm = TRUE),
             n = dplyr::n(),
             .by = c("site_name", "sensor_Y"))
 print(dist_summary)
@@ -55,23 +57,24 @@ pl_dist <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   ggplot(aes(x = dist)) +
   geom_histogram(binwidth = 0.1) +
-  geom_vline(xintercept = 5, colour = "red", linetype = "dashed") +
+  geom_vline(xintercept = 10, colour = "red", linetype = "dashed") +
+  geom_vline(xintercept = 5,  colour = "orange", linetype = "dotted") +
   labs(x = "Distance between HYPERNETS station and nearest satellite pixel (km)",
        y = "Count",
-       title = "Distance sanity check (5 km ceiling shown in red)") +
+       title = "Distance check (10 km ceiling in red; original 5 km threshold in orange)") +
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = "black"))
-ggsave("figures/sensitivity_distance_check.png", pl_dist, width = 10, height = 3)
+ggsave("figures/sensitivity_distance_check.png", pl_dist, width = 12, height = 4)
 
 
 # Time-window sensitivity -----------------------------------------------------
 
 # For each site, look at how Error_50/Bias_50 vary with diff_time, to justify the
-# site-specific time-window choice (site_diff_time_limit(): MAFR = 15 min, THAU = 30 min).
+# site-specific time-window choice (site_diff_time_limit(): MAFR = 15 min, THFR = 30 min).
 # NB: follows the same approach as the Tara "in review" paper's time-window check (which found
 # no significant trend there); here a site-dependent trend is plausible given MAFR's much
-# faster tidal turbidity dynamics relative to THAU's more stable lagoon water -- that is
+# faster tidal turbidity dynamics relative to THFR's more stable lagoon water -- that is
 # exactly the asymmetry the two different site-specific limits are meant to capture.
 pl_time_sensitivity <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
@@ -79,7 +82,7 @@ pl_time_sensitivity <- matchup_all_noQC |>
   ggplot(aes(x = diff_time, y = Error_50)) +
   geom_point(aes(colour = dist), alpha = 0.6) +
   geom_smooth(method = "lm", se = TRUE) +
-  geom_vline(data = data.frame(site_name = c("MAFR", "THAU"), time_limit = c(15, 30)),
+  geom_vline(data = data.frame(site_name = c("MAFR", "THFR"), time_limit = c(15, 30)),
              aes(xintercept = time_limit), colour = "red", linetype = "dashed") +
   scale_colour_viridis_c() +
   labs(x = "Time difference between HYPERNETS scan and satellite overpass (minutes)",
@@ -105,23 +108,25 @@ print(time_trend_test)
 # Daily-averaging sensitivity (site-specific time window) -----------------------
 
 # TODO: once daily_average_matchups() (code/0_functions.R) has been validated against real
-# multi-day MAFR/THAU data, compare global_stats(..., daily_average = FALSE) against
+# multi-day MAFR/THFR data, compare global_stats(..., daily_average = FALSE) against
 # global_stats(..., daily_average = TRUE) here, per site and sensor family, to quantify how
 # much the day-averaging step changes the headline Error/Bias values, and to check whether it
 # meaningfully addresses the "not all matchups are independent of one another" caveat raised in
-# the Tara "in review" paper's Conclusion. Not yet run -- needs THAU data, and confirmation
+# the Tara "in review" paper's Conclusion. Not yet run -- needs THFR data, and confirmation
 # that daily_average_matchups()'s file-name date-parsing is robust across all four sensor
 # families' naming conventions (see CLAUDE.md's note on satellite-family naming inconsistencies).
 #
-# compare_daily_avg <- function(site_name, sensor_Y){
-#   no_avg <- global_stats(site_name, sensor_Y, daily_average = FALSE) |> mutate(daily_average = FALSE)
-#   avg    <- global_stats(site_name, sensor_Y, daily_average = TRUE)  |> mutate(daily_average = TRUE)
-#   bind_rows(no_avg, avg)
-# }
-# daily_avg_comparison <- plyr::mdply(sensor_grid("OLCI"), compare_daily_avg)
-# daily_avg_comparison |>
-#   filter(sensor_X == "HYPERNETS") |>
-#   ggplot(aes(x = wavelength, y = Error_50, colour = daily_average)) +
-#   geom_line() +
-#   facet_grid(site_name ~ sensor_Y) +
-#   labs(title = "Effect of daily averaging on Error (%) per wavelength")
+compare_daily_avg <- function(site_name, sensor_Y){
+  no_avg <- global_stats(site_name, sensor_Y, daily_average = FALSE) |> mutate(daily_average = FALSE)
+  avg    <- global_stats(site_name, sensor_Y, daily_average = TRUE)  |> mutate(daily_average = TRUE)
+  bind_rows(no_avg, avg)
+}
+daily_avg_comparison <- purrr::pmap_dfr(sensor_grid("OLCI"), compare_daily_avg)
+pl_daily_avg <- daily_avg_comparison |>
+  filter(sensor_X == "HYPERNETS") |>
+  ggplot(aes(x = wavelength, y = Error_50, colour = daily_average, size = n_w_nm_clean)) +
+  geom_point() +
+  facet_grid(site_name ~ sensor_Y, scales = "free_y") +
+  labs(title = "Effect of daily averaging on Error (%) per wavelength", size = "Unique \n data points")
+ggsave("figures/sensitivity_daily_average.png", pl_daily_avg, width = 12, height = 8)
+

@@ -23,6 +23,9 @@ global_scatterplot_stack("VIIRS")
 global_scatterplot_stack("OLCI")
 global_scatterplot_stack("OCI")
 
+# Stop here if running from terminal
+if (!interactive()) quit(save = "no", status = 0)
+
 
 # Figure 1 ---------------------------------------------------------------
 
