@@ -5,6 +5,8 @@
 # Libraries ---------------------------------------------------------------
 
 library(tidyverse)
+library(DBI)
+library(RSQLite)
 library(ncdf4)
 library(tidync)
 library(FNN) # Needed for fastest nearest neighbor searching
@@ -950,6 +952,277 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TR
     proc_res <- furrr::future_pmap_dfr(ply_grid, global_stats, daily_average = daily_average, .options = furrr_options(seed = TRUE))
     write_csv(proc_res, paste0("output/global_stats_RHOW_",sensor_Z,".csv"))
   }
+}
+
+
+# Database-sourced matchups (SQLite) ---------------------------------------
+#
+# Extracts HYPERNETS-vs-satellite RHOW matchup pairs directly from a
+# Hypernets_matchups SQLite database (e.g. thfr_2025.db), as an alternative
+# data source to the exported .csv files read via file_path_build() /
+# load_matchup_mean() above.
+#
+# Schema (confirmed against thfr_2025.db, 2026-08-24):
+#   matchups          -- one row per HYPERNETS scan. Columns HYPERNETS/S3A/S3B/
+#                        PACE/AQUA/JPSS1/JPSS2/SNPP hold a measure_info.id for
+#                        that sensor's matched observation, or NULL if no
+#                        matchup exists for that sensor at that time.
+#   measure_info      -- one row per sensor observation: data_id (->
+#                        measure_data_rhow.id, start of a contiguous block),
+#                        data_count (length of that block), radiometer_id (->
+#                        radiometer.id), day ("YYYYMMDD"), time ("HHMMSS"),
+#                        latitude, longitude, qc.
+#   measure_data_rhow -- one row per replicate/pixel spectrum: id, pixel_pos
+#                        ("" for HYPERNETS scan replicates; "col,row" e.g.
+#                        "0,0" for satellite pixel-box positions, "0,0" =
+#                        centre pixel), then one column per integer
+#                        wavelength (nm) 350-1100 holding RHOW (NULL where
+#                        that sensor doesn't measure that band -- satellite
+#                        rows are only populated at that sensor's actual band
+#                        centres, confirmed to match W_nm_out() above).
+#   radiometer        -- id -> name/full_name/radiometer_type lookup.
+#   rsr               -- relative spectral response function: radiometer_id,
+#                        band, wl (integer nm, same grid as measure_data_rhow),
+#                        rsr (raw response), rsr_p (response pre-normalised so
+#                        sum(rsr_p) == 1 per band). Present for S3A/S3B/AQUA/
+#                        JPSS1/JPSS2/SNPP; NOT present for PACE (OCI is itself
+#                        near-hyperspectral, so no discrete-band RSR is stored).
+#
+# NB: unlike the exported .csv files, the db stores raw per-pixel/per-scan
+# values only -- there is no precomputed "weighted mean" row. Two distinct
+# aggregation questions are handled separately here:
+#  (1) Satellite side: how to combine the multiple pixels in a matchup's
+#      pixel box. agg_method = "mean" (default, arithmetic mean of all stored
+#      pixels) or "center" (just pixel_pos "0,0").
+#  (2) HYPERNETS side: how to turn its ~1 nm hyperspectral scan into a value
+#      comparable to one satellite band. This is NOT a simple same-wavelength
+#      lookup -- it is reconstructed here as a proper spectral convolution
+#      against the satellite's own RSR (stored in `rsr`), via
+#      srf_convolve_hyp(). This is almost certainly what "weighted" means in
+#      the exported .csv pipeline's data_type column (see load_matchup_mean()
+#      above). PACE has no stored RSR, so its HYPERNETS side falls back to a
+#      same-wavelength lookup (Hyp_method == "nearest_nm" in the output, vs
+#      "srf" for the other six satellites).
+
+# Satellite column names as they appear in `matchups` and `radiometer.name`
+db_satellite_names <- c("S3A", "S3B", "PACE", "AQUA", "JPSS1", "JPSS2", "SNPP")
+
+# Infer site_name from the db file name (e.g. "thfr_2025.db" -> "THFR"),
+# mirroring the MAFR/THFR site_name convention used throughout this file
+db_site_name <- function(db_path){
+  toupper(str_split(basename(db_path), "_")[[1]][1])
+}
+
+# Map a radiometer's stored RSR bands onto this project's fixed nominal
+# wavelength labels (W_nm_out()) by nearest distance. The RSR-weighted
+# centroid of a physical band and its conventional nominal label differ by a
+# few nm (e.g. OLCI's nominal 665 nm band centroids at ~665.4 nm; its nominal
+# 1020 nm band centroids at ~1016 nm), so exact-equality matching would
+# silently drop every band. Bands with no nominal label within tol_nm are
+# dropped -- this is what naturally excludes physical channels the project
+# doesn't use (e.g. OLCI's O2-absorption bands at ~762/765/768 nm, or SWIR).
+srf_band_map <- function(con, radiometer_id, sensor_Y, tol_nm = 5){
+  nominal_nm <- W_nm_out(sensor_Y)
+  band_centres <- dbGetQuery(con, sprintf("SELECT band, wl, rsr_p FROM rsr WHERE radiometer_id = %d", radiometer_id)) |>
+    summarise(centre_nm = sum(wl * rsr_p), .by = band)
+  if(nrow(band_centres) == 0) return(tibble(band = integer(), wavelength = numeric()))
+  band_centres |>
+    rowwise() |>
+    mutate(wavelength = nominal_nm[which.min(abs(nominal_nm - centre_nm))],
+           dist_nm = min(abs(nominal_nm - centre_nm))) |>
+    ungroup() |>
+    filter(dist_nm <= tol_nm) |>
+    dplyr::select(band, wavelength)
+}
+
+# Convolve a full-resolution HYPERNETS spectrum against sensor_Y's relative
+# spectral response function (from the db's `rsr` table) to produce a
+# satellite-band-equivalent HYPERNETS spectrum. rsr_p is already normalised
+# so sum(rsr_p) == 1 per band, so the band-equivalent value is a direct
+# weighted sum (no extra division needed).
+# hyp_full: data.frame(matchup_id, wavelength, value) -- HYPERNETS's full
+# 350-1100 nm spectrum (per-scan mean) for one or more matchups
+srf_convolve_hyp <- function(con, radiometer_id, sensor_Y, hyp_full, tol_nm = 5){
+  band_map <- srf_band_map(con, radiometer_id, sensor_Y, tol_nm = tol_nm) |>
+    dplyr::rename(wavelength_nominal = wavelength)
+  if(nrow(band_map) == 0) return(tibble())
+
+  rsr_tbl <- dbGetQuery(con, sprintf("SELECT band, wl, rsr_p FROM rsr WHERE radiometer_id = %d", radiometer_id)) |>
+    inner_join(band_map, by = "band")
+
+  hyp_full |>
+    inner_join(rsr_tbl, by = c("wavelength" = "wl"), relationship = "many-to-many") |>
+    summarise(value = sum(value * rsr_p, na.rm = TRUE),
+              n_wl = n(),
+              .by = c(matchup_id, wavelength_nominal)) |>
+    dplyr::rename(wavelength = wavelength_nominal)
+}
+
+# Aggregate the raw measure_data_rhow rows belonging to one or more
+# measure_info entries into one spectrum (long format) per measure_info.id.
+# info_tbl: data.frame with columns id, data_id, data_count (from measure_info)
+db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
+  agg_method <- match.arg(agg_method)
+
+  # Expand each measure_info's contiguous [data_id, data_id + data_count - 1]
+  # block into individual measure_data_rhow ids, tagged with their parent
+  info_map <- info_tbl |>
+    mutate(data_id_end = data_id + data_count - 1) |>
+    rowwise() |>
+    reframe(measure_info_id = id, data_row_id = seq(data_id, data_id_end)) |>
+    ungroup()
+
+  # Pull the raw spectra for exactly the rows needed
+  spec_query <- paste0("SELECT * FROM measure_data_rhow WHERE id IN (",
+                       paste(unique(info_map$data_row_id), collapse = ","), ")")
+  spec_raw <- dbGetQuery(con, spec_query)
+
+  spec_long <- spec_raw |>
+    pivot_longer(cols = -c(id, pixel_pos), names_to = "wavelength", values_to = "value") |>
+    filter(!is.na(value)) |>
+    mutate(wavelength = as.numeric(wavelength)) |>
+    left_join(info_map, by = c("id" = "data_row_id"))
+
+  # Aggregate replicates/pixels per measure_info entry x wavelength
+  # NB: pixel_pos == "" identifies HYPERNETS scan replicates (always averaged);
+  # "center" agg_method only applies to satellite pixel boxes (pixel_pos == "0,0")
+  if(agg_method == "center"){
+    spec_long <- spec_long |>
+      filter(pixel_pos %in% c("", "0,0"))
+  }
+
+  spec_agg <- spec_long |>
+    summarise(value_mean = mean(value, na.rm = TRUE),
+              value_sd = sd(value, na.rm = TRUE),
+              n_used = n(),
+              .by = c(measure_info_id, wavelength)) |>
+    mutate(cv_pct = 100 * abs(value_sd / value_mean))
+
+  return(spec_agg)
+}
+
+# Extract HYPERNETS-vs-sensor_Y matchup pairs from a matchup db, in long
+# format: one row per matchup x wavelength, with a "Hyp" column and a
+# sensor_Y-named column ready for use with base_stats()/process_global_wavelength()
+# (which already expect a "Hyp" column name for HYPERNETS).
+# db_path <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"; sensor_Y <- "S3A"
+db_matchup_long <- function(db_path, sensor_Y, agg_method = c("mean", "center")){
+  agg_method <- match.arg(agg_method)
+  sensor_Y <- match.arg(sensor_Y, db_satellite_names)
+  db_path <- path.expand(db_path)
+  site_name <- db_site_name(db_path)
+
+  con <- dbConnect(RSQLite::SQLite(), db_path)
+  on.exit(dbDisconnect(con), add = TRUE)
+
+  # Matched (HYPERNETS, sensor_Y) measure_info.id pairs
+  match_query <- sprintf(
+    "SELECT id AS matchup_id, HYPERNETS AS hyp_info_id, %s AS sat_info_id FROM matchups WHERE HYPERNETS IS NOT NULL AND %s IS NOT NULL",
+    sensor_Y, sensor_Y)
+  match_ids <- dbGetQuery(con, match_query)
+  if(nrow(match_ids) == 0){
+    warning(paste0("No matchups found in ", basename(db_path), " for sensor_Y = ", sensor_Y))
+    return(tibble())
+  }
+
+  # Metadata (day/time/lat/lon) + data block pointers for every measure_info
+  # row referenced by these matchups
+  info_ids <- unique(c(match_ids$hyp_info_id, match_ids$sat_info_id))
+  info_query <- paste0("SELECT id, data_id, data_count, day, time, latitude, longitude, qc FROM measure_info WHERE id IN (",
+                       paste(info_ids, collapse = ","), ")")
+  info_tbl <- dbGetQuery(con, info_query)
+
+  # Aggregate spectra per measure_info entry
+  spec_agg <- db_load_spectra(con, info_tbl, agg_method = agg_method)
+
+  # Attach metadata to the aggregated spectra
+  info_meta <- info_tbl |>
+    mutate(dateTime = as.POSIXct(paste(day, time), format = "%Y%m%d %H%M%S", tz = "Europe/Paris")) |>
+    dplyr::select(id, dateTime, latitude, longitude, qc)
+
+  spec_meta <- spec_agg |>
+    left_join(info_meta, by = c("measure_info_id" = "id"))
+
+  # HYPERNETS side: full-resolution per-scan-mean spectrum, tagged by matchup_id
+  hyp_full <- match_ids |>
+    dplyr::select(matchup_id, measure_info_id = hyp_info_id) |>
+    left_join(spec_meta, by = "measure_info_id", relationship = "many-to-many") |>
+    dplyr::select(matchup_id, wavelength, value = value_mean, dateTime, lon_Hyp = longitude, lat_Hyp = latitude)
+
+  sat_radiometer_id <- dbGetQuery(con, sprintf("SELECT id FROM radiometer WHERE name = '%s'", sensor_Y))$id
+  has_rsr <- dbGetQuery(con, sprintf("SELECT COUNT(*) AS n FROM rsr WHERE radiometer_id = %d", sat_radiometer_id))$n > 0
+
+  if(has_rsr){
+    # Reconstruct the satellite's band-equivalent HYPERNETS value by
+    # convolving the full HYPERNETS spectrum against the satellite's stored
+    # RSR -- the scientifically correct way to compare a hyperspectral
+    # in-situ instrument against a discrete-band satellite sensor
+    hyp_meta <- hyp_full |> dplyr::select(matchup_id, dateTime, lon_Hyp, lat_Hyp) |> distinct()
+    hyp_side <- srf_convolve_hyp(con, sat_radiometer_id, sensor_Y, hyp_full) |>
+      left_join(hyp_meta, by = "matchup_id") |>
+      dplyr::rename(Hyp = value, Hyp_n = n_wl) |>
+      mutate(Hyp_method = "srf") |>
+      dplyr::select(matchup_id, wavelength, Hyp, Hyp_n, Hyp_method, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp)
+  } else {
+    # No stored RSR for this sensor (PACE/OCI: itself near-hyperspectral) --
+    # fall back to a same-wavelength lookup
+    hyp_side <- hyp_full |>
+      dplyr::select(matchup_id, wavelength, Hyp = value, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp) |>
+      mutate(Hyp_n = NA_integer_, Hyp_method = "nearest_nm")
+  }
+
+  # NB: relationship = "many-to-many" is expected, not a bug -- a single
+  # satellite overpass (one measure_info_id) commonly matches several
+  # different HYPERNETS scans, and vice versa
+  sat_side <- match_ids |>
+    dplyr::select(matchup_id, measure_info_id = sat_info_id) |>
+    left_join(spec_meta, by = "measure_info_id", relationship = "many-to-many") |>
+    dplyr::select(matchup_id, wavelength,
+                  !!sensor_Y := value_mean,
+                  !!paste0(sensor_Y, "_n") := n_used,
+                  !!paste0(sensor_Y, "_cv_pct") := cv_pct,
+                  !!paste0("dateTime_", sensor_Y) := dateTime,
+                  !!paste0("lon_", sensor_Y) := longitude,
+                  !!paste0("lat_", sensor_Y) := latitude)
+
+  # NB: filter on the value columns specifically, not na.omit() -- Hyp_n/cv_pct
+  # can be legitimately NA (e.g. n_used == 1 under agg_method = "center") and
+  # that must not drop an otherwise-valid pair
+  df_pairs <- inner_join(hyp_side, sat_side, by = c("matchup_id", "wavelength")) |>
+    filter(!is.na(Hyp), !is.na(.data[[sensor_Y]]))
+
+  if(nrow(df_pairs) == 0){
+    warning(paste0("Matchups found but no overlapping wavelengths for sensor_Y = ", sensor_Y))
+    return(tibble())
+  }
+
+  # Per-matchup distance (km) and time difference (min), for the same QC role
+  # dist/diff_time play in process_matchup_file()/process_sensor() above --
+  # filtering against dist_limit / site_diff_time_limit(site_name) is left to
+  # the caller
+  df_pairs <- df_pairs |>
+    mutate(dist_km = round(distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(!!sym(paste0("lon_", sensor_Y)), !!sym(paste0("lat_", sensor_Y)))) / 1000, 3),
+           diff_time_min = round(abs(as.numeric(difftime(dateTime_Hyp, !!sym(paste0("dateTime_", sensor_Y)), units = "mins")))),
+           match_date = as.Date(dateTime_Hyp),
+           site_name = site_name,
+           sensor_Y = sensor_Y,
+           .before = 1)
+
+  return(df_pairs)
+}
+
+# Convenience wrapper: run db_matchup_long() for every satellite present in
+# the matchups table (or a subset via sensor_Y_vec), row-binding the results.
+# NB: this row-binds different sensors' pair columns (S3A, AQUA, ...) using
+# bind_rows(), so each sensor's satellite-value column stays separate rather
+# than being merged into one column -- filter/split by sensor_Y before
+# further analysis.
+db_matchup_all <- function(db_path, sensor_Y_vec = db_satellite_names, agg_method = c("mean", "center")){
+  agg_method <- match.arg(agg_method)
+  map_dfr(sensor_Y_vec, function(sY){
+    tryCatch(db_matchup_long(db_path, sY, agg_method = agg_method),
+             warning = function(w){ message(conditionMessage(w)); tibble() })
+  })
 }
 
 
