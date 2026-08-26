@@ -975,7 +975,13 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TR
 #   measure_data_rhow -- one row per replicate/pixel spectrum: id, pixel_pos
 #                        ("" for HYPERNETS scan replicates; "col,row" e.g.
 #                        "0,0" for satellite pixel-box positions, "0,0" =
-#                        centre pixel), then one column per integer
+#                        centre pixel), pixel_lat/pixel_lon (added 2026-08-26
+#                        -- true per-pixel geolocation; constant/repeated
+#                        across HYPERNETS replicate rows for one scan, but
+#                        varies per pixel_pos within a satellite pixel box --
+#                        distinct from measure_info.latitude/longitude below,
+#                        which is a single per-observation reference position,
+#                        not per-pixel), then one column per integer
 #                        wavelength (nm) 350-1100 holding RHOW (NULL where
 #                        that sensor doesn't measure that band -- satellite
 #                        rows are only populated at that sensor's actual band
@@ -1078,7 +1084,7 @@ db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
   spec_raw <- dbGetQuery(con, spec_query)
 
   spec_long <- spec_raw |>
-    pivot_longer(cols = -c(id, pixel_pos), names_to = "wavelength", values_to = "value") |>
+    pivot_longer(cols = -c(id, pixel_pos, pixel_lat, pixel_lon), names_to = "wavelength", values_to = "value") |>
     filter(!is.na(value)) |>
     mutate(wavelength = as.numeric(wavelength)) |>
     left_join(info_map, by = c("id" = "data_row_id"))
@@ -1091,10 +1097,16 @@ db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
       filter(pixel_pos %in% c("", "0,0"))
   }
 
+  # pixel_lat_mean/pixel_lon_mean: mean per-pixel geolocation (pixel_lat/
+  # pixel_lon from measure_data_rhow) of whichever rows contributed to
+  # value_mean -- under agg_method = "center" this is exactly the centre
+  # pixel's true coordinate; under "mean" it is the pixel-box centroid
   spec_agg <- spec_long |>
     summarise(value_mean = mean(value, na.rm = TRUE),
               value_sd = sd(value, na.rm = TRUE),
               n_used = n(),
+              pixel_lat_mean = mean(pixel_lat, na.rm = TRUE),
+              pixel_lon_mean = mean(pixel_lon, na.rm = TRUE),
               .by = c(measure_info_id, wavelength)) |>
     mutate(cv_pct = 100 * abs(value_sd / value_mean))
 
@@ -1144,10 +1156,16 @@ db_matchup_long <- function(db_path, sensor_Y, agg_method = c("mean", "center"))
     left_join(info_meta, by = c("measure_info_id" = "id"))
 
   # HYPERNETS side: full-resolution per-scan-mean spectrum, tagged by matchup_id
+  # lon_Hyp/lat_Hyp come from measure_info (single reference position per scan);
+  # pixel_lon_Hyp/pixel_lat_Hyp come from measure_data_rhow.pixel_lat/pixel_lon
+  # (per-pixel geolocation, added 2026-08-26 -- for HYPERNETS rows this is
+  # constant across replicates, i.e. the same fixed station coordinate)
   hyp_full <- match_ids |>
     dplyr::select(matchup_id, measure_info_id = hyp_info_id) |>
     left_join(spec_meta, by = "measure_info_id", relationship = "many-to-many") |>
-    dplyr::select(matchup_id, wavelength, value = value_mean, dateTime, lon_Hyp = longitude, lat_Hyp = latitude)
+    dplyr::select(matchup_id, wavelength, value = value_mean, dateTime,
+                  lon_Hyp = longitude, lat_Hyp = latitude,
+                  pixel_lon_Hyp = pixel_lon_mean, pixel_lat_Hyp = pixel_lat_mean)
 
   sat_radiometer_id <- dbGetQuery(con, sprintf("SELECT id FROM radiometer WHERE name = '%s'", sensor_Y))$id
   has_rsr <- dbGetQuery(con, sprintf("SELECT COUNT(*) AS n FROM rsr WHERE radiometer_id = %d", sat_radiometer_id))$n > 0
@@ -1157,23 +1175,27 @@ db_matchup_long <- function(db_path, sensor_Y, agg_method = c("mean", "center"))
     # convolving the full HYPERNETS spectrum against the satellite's stored
     # RSR -- the scientifically correct way to compare a hyperspectral
     # in-situ instrument against a discrete-band satellite sensor
-    hyp_meta <- hyp_full |> dplyr::select(matchup_id, dateTime, lon_Hyp, lat_Hyp) |> distinct()
+    hyp_meta <- hyp_full |> dplyr::select(matchup_id, dateTime, lon_Hyp, lat_Hyp, pixel_lon_Hyp, pixel_lat_Hyp) |> distinct()
     hyp_side <- srf_convolve_hyp(con, sat_radiometer_id, sensor_Y, hyp_full) |>
       left_join(hyp_meta, by = "matchup_id") |>
       dplyr::rename(Hyp = value, Hyp_n = n_wl) |>
       mutate(Hyp_method = "srf") |>
-      dplyr::select(matchup_id, wavelength, Hyp, Hyp_n, Hyp_method, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp)
+      dplyr::select(matchup_id, wavelength, Hyp, Hyp_n, Hyp_method, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp, pixel_lon_Hyp, pixel_lat_Hyp)
   } else {
     # No stored RSR for this sensor (PACE/OCI: itself near-hyperspectral) --
     # fall back to a same-wavelength lookup
     hyp_side <- hyp_full |>
-      dplyr::select(matchup_id, wavelength, Hyp = value, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp) |>
+      dplyr::select(matchup_id, wavelength, Hyp = value, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp, pixel_lon_Hyp, pixel_lat_Hyp) |>
       mutate(Hyp_n = NA_integer_, Hyp_method = "nearest_nm")
   }
 
   # NB: relationship = "many-to-many" is expected, not a bug -- a single
   # satellite overpass (one measure_info_id) commonly matches several
   # different HYPERNETS scans, and vice versa
+  # lon_/lat_<sensor_Y> come from measure_info (single reference position);
+  # pixel_lon_/pixel_lat_<sensor_Y> come from measure_data_rhow.pixel_lat/
+  # pixel_lon (per-pixel geolocation) -- under agg_method = "center" this is
+  # the true centre-pixel coordinate, under "mean" the pixel-box centroid
   sat_side <- match_ids |>
     dplyr::select(matchup_id, measure_info_id = sat_info_id) |>
     left_join(spec_meta, by = "measure_info_id", relationship = "many-to-many") |>
@@ -1183,7 +1205,9 @@ db_matchup_long <- function(db_path, sensor_Y, agg_method = c("mean", "center"))
                   !!paste0(sensor_Y, "_cv_pct") := cv_pct,
                   !!paste0("dateTime_", sensor_Y) := dateTime,
                   !!paste0("lon_", sensor_Y) := longitude,
-                  !!paste0("lat_", sensor_Y) := latitude)
+                  !!paste0("lat_", sensor_Y) := latitude,
+                  !!paste0("pixel_lon_", sensor_Y) := pixel_lon_mean,
+                  !!paste0("pixel_lat_", sensor_Y) := pixel_lat_mean)
 
   # NB: filter on the value columns specifically, not na.omit() -- Hyp_n/cv_pct
   # can be legitimately NA (e.g. n_used == 1 under agg_method = "center") and
