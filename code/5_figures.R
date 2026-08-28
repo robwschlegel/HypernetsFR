@@ -17,6 +17,9 @@ source("code/0_functions.R")
 
 # Global scatterplots -----------------------------------------------------
 
+# NB: This can only be run via a terminal due to the multicore code
+# Rscript code/5_figures.R
+
 # Satellite
 global_scatterplot_stack("MODIS")
 global_scatterplot_stack("VIIRS")
@@ -225,8 +228,7 @@ plot_fig4_panel <- function(df) {
 fig4_panels <- lapply(fig4_list, plot_fig4_panel)
 fig_4 <- wrap_plots(fig4_panels, ncol = 2) +
   plot_annotation(tag_levels = "a", tag_suffix = ")")
-ggsave("figures/fig_4.png", fig_4, width = 12,
-       height = ceiling(length(fig4_panels) / 2) * 6)
+ggsave("figures/fig_4.png", fig_4, width = 12, height = ceiling(length(fig4_panels) / 2) * 6)
 
 
 # Figure 11 ---------------------------------------------------------------

@@ -15,6 +15,9 @@ source("code/0_functions.R")
 
 # Global statistics --------------------------------------------------------
 
+# NB: This can only be run via a terminal due to the multicore code
+# Rscript code/4_matchups_global.R
+
 process_sensor("MODIS", "global", daily_average = TRUE)
 process_sensor("VIIRS", "global", daily_average = TRUE)
 process_sensor("OLCI", "global", daily_average = TRUE)

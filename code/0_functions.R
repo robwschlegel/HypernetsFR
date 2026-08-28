@@ -17,7 +17,8 @@ library(ggimage) # For adding .jpg files to figures
 library(patchwork) # For complex paneling of figures
 library(future)
 library(furrr)
-# library(doParallel); registerDoParallel(cores = detectCores() - 2)
+library(ggh4x) # For independent per-facet axis limits (facetted_pos_scales()) alongside a true
+                # 1:1 x/y aspect ratio per panel -- see plot_global_nm())
 
 
 # Setup -------------------------------------------------------------------
@@ -329,11 +330,15 @@ sat_var_check <- function(file_name, cv_limit = 30){
 
 # Determine which sites currently have data on disk for a given satellite platform
 # NB: MAFR (Gironde Estuary, highly turbid) and THFR (lagoon, clear-water comparison site
-# to MAFR -- see Doxaran et al. 2024's analogous Berre lagoon vs Gironde Estuary contrast)
+# to MAFR, see Doxaran et al. 2024's analogous Berre lagoon vs Gironde Estuary contrast)
 # are both present on disk as of 2026-07-14. Additional sites are picked up automatically
-# the moment their data folder exists on disk.
+# the moment their data folder exists on disk. 
+# THFR_NE (added 2026-08-28) is a third, independent site alongside MAFR/THFR.
+# The NE-quadrant-filtered THFR re-analysis (see the TEMPORARY section in this file and 
+# meta/pixel_explore.R), intentionally kept as its own site for direct three-way 
+# comparison rather than replacing THFR anywhere in the pipeline.
 available_sites <- function(sat_name){
-  candidate_sites <- c("MAFR", "THFR")
+  candidate_sites <- c("MAFR", "THFR", "THFR_NE")
   site_present <- vapply(candidate_sites, function(s) dir.exists(file_path_build(s, sat_name)), logical(1))
   sites_found <- candidate_sites[site_present]
   if(length(sites_found) == 0) stop(paste0("No site data found on disk for sensor: ", sat_name))
@@ -855,6 +860,7 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   # Remove outlier files
   # NB: This creates the list of valid matchups after screening for outliers in the single matchup QC process
   file_list_no_out <- file_list_clean[!basename(file_list_clean) %in% outliers_sat$file_name]
+  # file_list_no_out <- file_list_clean # Or rather do not remove outliers as this is too subjective of a process
   if(length(file_list_no_out) == 0) stop(paste("No files passed QC for", site_name, sensor_X, sensor_Y))
   
   # Load data
@@ -1375,6 +1381,174 @@ db_matchup_all <- function(db_path, sensor_Y_vec = db_satellite_names, agg_metho
 }
 
 
+# TEMPORARY -- NE-quadrant-filtered THFR matchup CSVs -----------------------
+# meta/pixel_explore.R / meta/pixel_explore_output/summary.md found that THFR's satellite
+# pixel-box extraction is centered ~2.6 km SW of the true (fixed) HYPERNETS station position, and
+# that there is a real, spectrally coherent quadrant-dependent bias in the resulting pixel field.
+# The two functions below regenerate THFR's raw per-matchup RHOW CSV files with the satellite
+# side restricted to just the NE quadrant (pixel_lat >= lat_Hyp & pixel_lon >= lon_Hyp, same
+# hard-cut definition as pixel_bearing_quadrant() in meta/pixel_explore.R) before re-averaging,
+# preserving the exact on-disk schema so load_matchup_mean()/load_matchup_long()/
+# sat_var_check()/process_matchup_folder() can read the output completely unmodified. Written to
+# a new parallel site folder ("THFR_NE") fully isolated from the real THFR/MAFR data delivered by
+# Hypernets_matchups. Nothing in the existing pipeline is affected unless/until "THFR_NE" is
+# separately added to available_sites()'s candidate list.
+
+# Helper for db_export_matchups_ne() below. Writes one NE-quadrant-filtered matchup as a raw
+# RHOW CSV, by locating the matching original THFR file(s) and copying everything except the
+# satellite sensor's rows verbatim. The HYPERNETS rows are untouched because the SRF-convolved
+# HYPERNETS value depends only on the HYPERNETS scan + the satellite's RSR, not on which
+# satellite pixels get averaged.
+# df_ne_matchup: one matchup_id's NE-quadrant satellite pixel rows for one sensor_Y (a subset of
+# db_matchup_pixels()'s output, already filtered to pixel_lat >= lat_Hyp & pixel_lon >= lon_Hyp)
+write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir){
+  sat_dt_col <- paste0("dateTime_", sensor_Y)
+
+  hyp_ts <- format(df_ne_matchup$dateTime_Hyp[1], "%Y%m%dT%H%M%S", tz = "Europe/Paris")
+  sat_ts <- format(df_ne_matchup[[sat_dt_col]][1], "%Y%m%dT%H%M%S", tz = "Europe/Paris")
+
+  # Locate the original THFR file(s) for this matchup (both _R and _C variants, if both exist)
+  orig_dir <- file_path_build("THFR", sensor_Y)
+  orig_prefix <- paste0(sensor_Y, "_", sat_ts, "_vs_HYPERNETS_", hyp_ts)
+  orig_files <- list.files(orig_dir, pattern = paste0("^", orig_prefix, ".*\\.csv$"), full.names = TRUE)
+
+  if(length(orig_files) == 0){
+    message("  No original THFR file found for ", orig_prefix, " -- skipping")
+    return(invisible(NULL))
+  }
+
+  # Per-wavelength NE-quadrant stats for this one matchup
+  wl_stats <- df_ne_matchup |>
+    summarise(mean_val = mean(.data[[sensor_Y]], na.rm = TRUE),
+              sd_val = sd(.data[[sensor_Y]], na.rm = TRUE),
+              n_used = n(),
+              .by = wavelength)
+  if(nrow(wl_stats) == 0) return(invisible(NULL))
+
+  # Single-scalar CV proxy (variability_centered is one value per file, not per wavelength) --
+  # exact upstream Hypernets_matchups formula unknown. This reuses db_load_spectra()'s cv_pct
+  # logic (100 * sd/|mean|), pooled across wavebands with >= 2 contributing NE pixels. Uses the
+  # median rather than the mean across wavebands. A handful of near-zero-mean bands (e.g.
+  # S3A's 665/673/681 nm) otherwise produce cv_pct in the thousands of percent and dominate a
+  # simple mean, even though most bands sit in a plausible range (confirmed empirically).
+  cv_pct_by_wl <- wl_stats |> filter(n_used >= 2, mean_val != 0) |>
+    mutate(cv_pct = 100 * abs(sd_val / mean_val))
+  # Fall back to 0 (not NA) when every waveband has < 2 contributing NE pixels. With a single
+  # pixel there is no measurable spatial spread, so "no pixel disagreement detected" is the
+  # correct reading, and it keeps variability_centered numeric (sat_var_check() errors on an
+  # all-NA column, since it expects exactly one non-NA value per file)
+  cv_scalar <- if(nrow(cv_pct_by_wl) > 0) median(cv_pct_by_wl$cv_pct, na.rm = TRUE) else 0
+
+  ne_lat <- mean(df_ne_matchup$pixel_lat, na.rm = TRUE)
+  ne_lon <- mean(df_ne_matchup$pixel_lon, na.rm = TRUE)
+  ne_pixel_pos <- paste(sort(unique(df_ne_matchup$pixel_pos)), collapse = ";")
+
+  for(orig_file in orig_files){
+    df_orig <- suppressMessages(read_delim(orig_file, delim = ";", col_types = cols(.default = "c"), show_col_types = FALSE))
+    colnames(df_orig)[1] <- "sensor"
+
+    is_sat_row <- grepl(paste0("^", sensor_Y, " "), df_orig$sensor)
+    if(!any(is_sat_row)){
+      message("  No ", sensor_Y, " rows found in ", basename(orig_file), " -- skipping")
+      next
+    }
+
+    wl_cols <- setdiff(colnames(df_orig),
+                       c("sensor", "data_type", "day", "time", "latitude", "longitude",
+                         "radiometer_id", "pixel_pos", "type", "variability_centered"))
+
+    df_new <- df_orig
+    df_new$latitude[is_sat_row] <- as.character(round(ne_lat, 6))
+    df_new$longitude[is_sat_row] <- as.character(round(ne_lon, 6))
+    df_new$pixel_pos[is_sat_row] <- ne_pixel_pos
+    df_new$variability_centered[is_sat_row] <- if(is.na(cv_scalar)) NA_character_ else as.character(round(cv_scalar, 6))
+
+    # Recompute each satellite row's wavelength values from the NE-quadrant subset. Role
+    # (mean/max/min) is read off the row's own (possibly bug-quirky, e.g. "rhow weighted")
+    # data_type label so per-sensor label variants (see manuscript/upstream-data-bugs.md, Bugs
+    # 1/2/7) are preserved untouched
+    for(ridx in which(is_sat_row)){
+      dt <- tolower(df_new$data_type[ridx])
+      role <- if(grepl("std_max", dt)) "max" else if(grepl("std_min", dt)) "min" else "mean"
+      for(wl in wl_cols){
+        wl_num <- suppressWarnings(as.numeric(wl))
+        row_stat <- wl_stats[wl_stats$wavelength == wl_num, ]
+        if(nrow(row_stat) == 0 || is.na(row_stat$mean_val)){
+          df_new[[wl]][ridx] <- NA_character_
+          next
+        }
+        val <- switch(role,
+                      mean = row_stat$mean_val,
+                      max  = row_stat$mean_val + row_stat$sd_val,
+                      min  = row_stat$mean_val - row_stat$sd_val)
+        df_new[[wl]][ridx] <- if(is.na(val)) NA_character_ else as.character(val)
+      }
+    }
+
+    out_name <- sub("\\.csv$", "_NE.csv", basename(orig_file))
+    write_delim(df_new, file.path(out_dir, out_name), delim = ";", quote = "needed", na = "")
+  }
+  invisible(NULL)
+}
+
+# Regenerates THFR's raw per-matchup RHOW CSV files for every sensor_Y in a sensor family,
+# restricted to the NE quadrant. See the section comment above for full context. Matchups with
+# zero surviving NE pixels for a given sensor are skipped entirely (no file written). For the
+# coarser sensors (AQUA/VIIRS/PACE) this is expected to remove most matchups, since the box is
+# centered well outside the NE quadrant for those (see meta/pixel_explore_output/summary.md).
+# sensor_Z = "OLCI"
+db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  sensor_Y_list <- sensor_grid(sensor_Z)$sensor_Y |> unique()
+
+  for(sensor_Y in sensor_Y_list){
+    message("db_export_matchups_ne: ", sensor_Y)
+    df_pixel <- tryCatch(db_matchup_pixels(db_path, sensor_Y),
+                          warning = function(w){ message(conditionMessage(w)); tibble() })
+    if(nrow(df_pixel) == 0) next
+
+    # db_matchup_pixels() returns every candidate pairing in the db's raw `matchups` table,
+    # time/distance QC is deliberately left to the caller (see its own docstring). The exported
+    # .csv files on disk only exist for matchups that already passed this gate, so it must be
+    # applied here before looking for a matching original file. diff_time_min is already
+    # matchup-level (constant per matchup_id), dist_km as returned by db_matchup_pixels() is
+    # per-PIXEL (station-to-pixel, used for the bearing/quadrant diagnostics), so the
+    # matchup-level distance (station-to-satellite-reference-position, matching how
+    # db_matchup_long()/process_sensor() gate distance) is recomputed here instead.
+    sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
+    df_pixel <- df_pixel |>
+      mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
+      filter(diff_time_min <= site_diff_time_limit("THFR"), dist_km_matchup <= 10)
+    if(nrow(df_pixel) == 0){
+      message("  No matchups for ", sensor_Y, " pass the time/distance QC gate -- skipping")
+      next
+    }
+
+    # Restrict to the inner 3x3 grid (col/row in -1..1) before the NE-quadrant filter -- this
+    # matches the box size Hypernets_matchups actually exports to .csv (confirmed by inspecting
+    # a real THFR file: pixel_pos values only span -1..1, even though the .db's raw
+    # measure_data_rhow block stores the wider 5x5 grid col/row -2..2). Excluding any pixel_pos
+    # containing "2" drops the outer ring; a hand-traced check on one S3A matchup found an outer-
+    # ring pixel (pixel_pos "-1,2") carrying a large negative outlier value that was dragging the
+    # NE-quadrant mean well below the true NE water signal -- restricting to the inner 3x3 grid
+    # removes exactly that kind of edge/outer-ring artifact.
+    df_ne <- df_pixel |>
+      filter(!grepl("2", pixel_pos)) |>
+      filter(pixel_lat >= lat_Hyp, pixel_lon >= lon_Hyp)
+    if(nrow(df_ne) == 0){
+      message("  No NE-quadrant pixels survive for ", sensor_Y, " -- skipping")
+      next
+    }
+
+    out_dir <- file_path_build("THFR_NE", sensor_Y)
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+    for(mid in unique(df_ne$matchup_id)){
+      write_matchup_csv_ne(filter(df_ne, matchup_id == mid), sensor_Y, out_dir)
+    }
+  }
+}
+
+
 # Plotting functions ------------------------------------------------------
 
 # Plot data based on wavelength group
@@ -1650,6 +1824,9 @@ plot_global_nm <- function(df, sensor_Y){
     mutate(date = as.Date(date, format = "%Y%m%d"))
   
   # Quick for loop per site — must filter df_prep by site so each panel gets its own stats
+  # (and its own max_axis, used below to give each facet an independent but still 1:1 x/y scale
+  # via ggh4x::facetted_pos_scales() because coord_fixed() doesn't support facet_wrap(scales = "free")
+  # directly, so per-panel limits have to be supplied this way instead)
   df_stats <- data.frame()
   for(i in 1:length(unique(df$site_name))){
     site_i <- unique(df$site_name)[i]
@@ -1660,6 +1837,7 @@ plot_global_nm <- function(df, sensor_Y){
 
     df_stats_i <- base_stats(x_vec, y_vec) |>
       mutate(site_name = site_i,
+             max_axis = max(x_vec, y_vec, na.rm = TRUE),
              label = paste0("n: ", n, " (", nrow(unique_days), ")",
                             "\nS: ", sprintf("%.2f", Slope_II), "±",
                             sprintf("%.2f", abs((Slope_II_high - Slope_II_low) / 2)),
@@ -1668,6 +1846,12 @@ plot_global_nm <- function(df, sensor_Y){
 
     df_stats <- rbind(df_stats, df_stats_i)
   }
+
+  # Per-facet axis limits, in the same order facet_wrap draws panels (alphabetical by
+  # site_name) so ggh4x::facetted_pos_scales() assigns each one to the right panel
+  axis_by_site <- setNames(df_stats$max_axis, df_stats$site_name)[sort(df_stats$site_name)]
+  pos_scales_x <- lapply(axis_by_site, function(a) scale_x_continuous(limits = c(0, a)))
+  pos_scales_y <- lapply(axis_by_site, function(a) scale_y_continuous(limits = c(0, a)))
   
   # Get number of files used in matchup
   # n_files <- length(unique(df_prep$file_name))
@@ -1713,18 +1897,25 @@ plot_global_nm <- function(df, sensor_Y){
   }
 
   # Plot
+  # NB: facet_wrap(scales = "free") is required here for ggh4x::facetted_pos_scales() below to
+  # actually take effect (confirmed empirically, without "free" it silently no-ops). That in
+  # turn means coord_fixed() can't be used for the 1:1 x/y aspect ratio (ggplot2/ggh4x reject
+  # free facet scales combined with a fixed coord, confirmed empirically too). theme(aspect.ratio
+  # = 1) below achieves the same visual effect instead (a square panel), which is a true 1:1
+  # relationship because each panel's x and y limits are set equal to each other via
+  # pos_scales_x/pos_scales_y above.
   if(sensor_Y == "S3"){
-    pl_base <- ggplot(data = df_sub, 
+    pl_base <- ggplot(data = df_sub,
                       aes_string(x = sensor_X_labs$sensor_col, y = sensor_Y_labs$sensor_col)) +
       geom_point(aes(colour = wavelength, shape = Platform), size = 2, alpha = point_alpha) +
       scale_colour_manual(values = colours_nm) +
-      facet_wrap(~site_name)
+      facet_wrap(~site_name, scales = "free")
   } else {
-    pl_base <- ggplot(data = df_sub, 
+    pl_base <- ggplot(data = df_sub,
                       aes_string(x = sensor_X_labs$sensor_col, y = sensor_Y_labs$sensor_col)) +
       geom_point(aes(colour = wavelength), alpha = point_alpha) +
       scale_colour_manual(values = colours_nm) +
-      facet_wrap(~site_name)
+      facet_wrap(~site_name, scales = "free")
   }
   pl_clean <- pl_base +
     # Add 1:1 line
@@ -1746,8 +1937,10 @@ plot_global_nm <- function(df, sensor_Y){
                 colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
     geom_abline(data = df_stats, aes(slope = Slope_II_high, intercept = Slope_II_int_high),
                 colour = "grey", linewidth = 1.0, linetype = "dashed") +
-    # Add per-panel stats text via geom_text so site_name routes it to the right facet
-    geom_text(data = df_stats, aes(label = label), x = 0, y = max_axis,
+    # Add per-panel stats text via geom_text so site_name routes it to the right facet 
+    # y comes from df_stats$max_axis (per-site) rather than the single global max_axis, so the
+    # label still sits at the top of each panel's own (now independent) range
+    geom_text(data = df_stats, aes(label = label, y = max_axis), x = 0,
               hjust = 0, vjust = 1, size = 4, inherit.aes = FALSE) +
     # Make it pretty
     labs(x = paste0(sensor_X_labs$sensor_lab,"; ", var_labs$units_lab),
@@ -1755,9 +1948,11 @@ plot_global_nm <- function(df, sensor_Y){
          colour = "Wavelength (nm)") +
     # scale_colour_manual(values = colours_nm) +
     guides(colour = guide_legend(nrow = legend_rows, override.aes = list(alpha = 1.0, size = 3))) +
-    coord_fixed(xlim = c(0, max_axis), ylim = c(0, max_axis)) +
+    # Per-panel axis limits (independent per site, x == y range per panel)
+    ggh4x::facetted_pos_scales(x = pos_scales_x, y = pos_scales_y) +
     theme_minimal() +
     theme(panel.border = element_rect(fill = NA, color = "black"),
+          aspect.ratio = 1, # square panels -- true 1:1 x/y since each panel's x and y limits match
           legend.title = element_text(size = 14),
           legend.text = element_text(size = 12),
           legend.position = "bottom",
@@ -1830,7 +2025,7 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   match_fig <- plot_global_nm(match_filter, sensor_Y)
 
   # Save the individual figure
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 8, height = 5)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 12, height = 5)
 
   # Remove the legend when this panel will be stacked beneath another with a shared legend
   # Then return it (invisibly) for reuse by global_scatterplot_stack()
@@ -1865,6 +2060,6 @@ global_scatterplot_stack <- function(sensor_Z){
   # Stack panels vertically and exit
   fig_stack <- ggpubr::ggarrange(plotlist = fig_list, ncol = 1, nrow = sensor_count, heights = panel_heights) +
     ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 8, height = 5 * sensor_count)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 12, height = 5 * sensor_count)
 }
 
