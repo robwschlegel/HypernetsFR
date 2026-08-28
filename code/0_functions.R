@@ -1113,6 +1113,31 @@ db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
   return(spec_agg)
 }
 
+# Like db_load_spectra() above but skips the mean/center aggregation step --
+# returns one row per (measure_info_id, pixel_pos, wavelength), keeping every
+# individual pixel's own value/pixel_lat/pixel_lon. Used by db_matchup_pixels()
+# below for per-pixel spatial diagnostics (see meta/pixel_explore.R).
+db_load_spectra_pixel <- function(con, info_tbl){
+  info_map <- info_tbl |>
+    mutate(data_id_end = data_id + data_count - 1) |>
+    rowwise() |>
+    reframe(measure_info_id = id, data_row_id = seq(data_id, data_id_end)) |>
+    ungroup()
+
+  spec_query <- paste0("SELECT * FROM measure_data_rhow WHERE id IN (",
+                       paste(unique(info_map$data_row_id), collapse = ","), ")")
+  spec_raw <- dbGetQuery(con, spec_query)
+
+  spec_long <- spec_raw |>
+    pivot_longer(cols = -c(id, pixel_pos, pixel_lat, pixel_lon), names_to = "wavelength", values_to = "value") |>
+    filter(!is.na(value)) |>
+    mutate(wavelength = as.numeric(wavelength)) |>
+    left_join(info_map, by = c("id" = "data_row_id")) |>
+    dplyr::select(measure_info_id, pixel_pos, pixel_lat, pixel_lon, wavelength, value)
+
+  return(spec_long)
+}
+
 # Extract HYPERNETS-vs-sensor_Y matchup pairs from a matchup db, in long
 # format: one row per matchup x wavelength, with a "Hyp" column and a
 # sensor_Y-named column ready for use with base_stats()/process_global_wavelength()
@@ -1226,6 +1251,106 @@ db_matchup_long <- function(db_path, sensor_Y, agg_method = c("mean", "center"))
   # the caller
   df_pairs <- df_pairs |>
     mutate(dist_km = round(distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(!!sym(paste0("lon_", sensor_Y)), !!sym(paste0("lat_", sensor_Y)))) / 1000, 3),
+           diff_time_min = round(abs(as.numeric(difftime(dateTime_Hyp, !!sym(paste0("dateTime_", sensor_Y)), units = "mins")))),
+           match_date = as.Date(dateTime_Hyp),
+           site_name = site_name,
+           sensor_Y = sensor_Y,
+           .before = 1)
+
+  return(df_pairs)
+}
+
+# Like db_matchup_long() above but keeps the satellite side at raw per-pixel
+# resolution (one row per matchup x wavelength x pixel_pos) instead of
+# aggregating the pixel box -- used for the spatial/directional diagnostics
+# in meta/pixel_explore.R. HYPERNETS side is still averaged across scan
+# replicates (pixel_pos == "" rows), matching db_matchup_long(agg_method = "mean").
+# db_path <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"; sensor_Y <- "S3A"
+db_matchup_pixels <- function(db_path, sensor_Y){
+  sensor_Y <- match.arg(sensor_Y, db_satellite_names)
+  db_path <- path.expand(db_path)
+  site_name <- db_site_name(db_path)
+
+  con <- dbConnect(RSQLite::SQLite(), db_path)
+  on.exit(dbDisconnect(con), add = TRUE)
+
+  match_query <- sprintf(
+    "SELECT id AS matchup_id, HYPERNETS AS hyp_info_id, %s AS sat_info_id FROM matchups WHERE HYPERNETS IS NOT NULL AND %s IS NOT NULL",
+    sensor_Y, sensor_Y)
+  match_ids <- dbGetQuery(con, match_query)
+  if(nrow(match_ids) == 0){
+    warning(paste0("No matchups found in ", basename(db_path), " for sensor_Y = ", sensor_Y))
+    return(tibble())
+  }
+
+  info_ids <- unique(c(match_ids$hyp_info_id, match_ids$sat_info_id))
+  info_query <- paste0("SELECT id, data_id, data_count, day, time, latitude, longitude, qc FROM measure_info WHERE id IN (",
+                       paste(info_ids, collapse = ","), ")")
+  info_tbl <- dbGetQuery(con, info_query)
+
+  spec_pixel <- db_load_spectra_pixel(con, info_tbl)
+
+  info_meta <- info_tbl |>
+    mutate(dateTime = as.POSIXct(paste(day, time), format = "%Y%m%d %H%M%S", tz = "Europe/Paris")) |>
+    dplyr::select(id, dateTime, latitude, longitude, qc)
+
+  # HYPERNETS side: average across scan replicates (pixel_pos == ""), same as
+  # db_load_spectra(agg_method = "mean") -- one value per matchup x wavelength
+  hyp_agg <- spec_pixel |>
+    filter(pixel_pos == "") |>
+    summarise(value = mean(value, na.rm = TRUE),
+              pixel_lat_Hyp = mean(pixel_lat, na.rm = TRUE),
+              pixel_lon_Hyp = mean(pixel_lon, na.rm = TRUE),
+              .by = c(measure_info_id, wavelength)) |>
+    left_join(info_meta, by = c("measure_info_id" = "id"))
+
+  hyp_full <- match_ids |>
+    dplyr::select(matchup_id, measure_info_id = hyp_info_id) |>
+    left_join(hyp_agg, by = "measure_info_id", relationship = "many-to-many") |>
+    dplyr::select(matchup_id, wavelength, value, dateTime,
+                  lon_Hyp = longitude, lat_Hyp = latitude,
+                  pixel_lon_Hyp, pixel_lat_Hyp)
+
+  sat_radiometer_id <- dbGetQuery(con, sprintf("SELECT id FROM radiometer WHERE name = '%s'", sensor_Y))$id
+  has_rsr <- dbGetQuery(con, sprintf("SELECT COUNT(*) AS n FROM rsr WHERE radiometer_id = %d", sat_radiometer_id))$n > 0
+
+  if(has_rsr){
+    hyp_meta <- hyp_full |> dplyr::select(matchup_id, dateTime, lon_Hyp, lat_Hyp, pixel_lon_Hyp, pixel_lat_Hyp) |> distinct()
+    hyp_side <- srf_convolve_hyp(con, sat_radiometer_id, sensor_Y, hyp_full) |>
+      left_join(hyp_meta, by = "matchup_id") |>
+      dplyr::rename(Hyp = value, Hyp_n = n_wl) |>
+      mutate(Hyp_method = "srf") |>
+      dplyr::select(matchup_id, wavelength, Hyp, Hyp_n, Hyp_method, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp, pixel_lon_Hyp, pixel_lat_Hyp)
+  } else {
+    hyp_side <- hyp_full |>
+      dplyr::select(matchup_id, wavelength, Hyp = value, dateTime_Hyp = dateTime, lon_Hyp, lat_Hyp, pixel_lon_Hyp, pixel_lat_Hyp) |>
+      mutate(Hyp_n = NA_integer_, Hyp_method = "nearest_nm")
+  }
+
+  # Satellite side: raw per-pixel rows, no aggregation -- one row per
+  # matchup x wavelength x pixel_pos
+  sat_side <- match_ids |>
+    dplyr::select(matchup_id, measure_info_id = sat_info_id) |>
+    left_join(spec_pixel, by = "measure_info_id", relationship = "many-to-many") |>
+    left_join(info_meta, by = c("measure_info_id" = "id")) |>
+    dplyr::select(matchup_id, wavelength, pixel_pos, pixel_lat, pixel_lon,
+                  !!sensor_Y := value,
+                  !!paste0("dateTime_", sensor_Y) := dateTime,
+                  !!paste0("lon_", sensor_Y) := longitude,
+                  !!paste0("lat_", sensor_Y) := latitude)
+
+  df_pairs <- inner_join(hyp_side, sat_side, by = c("matchup_id", "wavelength")) |>
+    filter(!is.na(Hyp), !is.na(.data[[sensor_Y]]))
+
+  if(nrow(df_pairs) == 0){
+    warning(paste0("Matchups found but no overlapping wavelengths for sensor_Y = ", sensor_Y))
+    return(tibble())
+  }
+
+  # Per-pixel distance (km) from the HYPERNETS station to this specific
+  # satellite pixel, used downstream for bearing/quadrant diagnostics
+  df_pairs <- df_pairs |>
+    mutate(dist_km = round(distHaversine(cbind(pixel_lon, pixel_lat), cbind(lon_Hyp, lat_Hyp)) / 1000, 3),
            diff_time_min = round(abs(as.numeric(difftime(dateTime_Hyp, !!sym(paste0("dateTime_", sensor_Y)), units = "mins")))),
            match_date = as.Date(dateTime_Hyp),
            site_name = site_name,
