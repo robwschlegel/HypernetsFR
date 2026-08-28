@@ -9,6 +9,9 @@
 # User-specific files
 .Ruserdata
 
+# Exploratory outputs
+meta/pixel_explore_output
+
 # Example code in package build process
 *-Ex.R
 
