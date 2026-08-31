@@ -1882,14 +1882,6 @@ plot_global_nm <- function(df, sensor_Y){
   max_Y <- max(df_prep[sensor_Y_labs$sensor_col], na.rm = TRUE)
   max_axis <- max(max_X, max_Y)
   
-  # Get unique satellite days
-  unique_days <- df |> 
-    dplyr::select(file_name) |> 
-    mutate(date = sapply(str_split(file_name, "_"), "[[", 2)) |> 
-    mutate(date = sapply(str_split(date, "T"), "[[", 1)) |> 
-    distinct(date) |> 
-    mutate(date = as.Date(date, format = "%Y%m%d"))
-  
   # Quick for loop per site — must filter df_prep by site so each panel gets its own stats
   # (and its own max_axis, used below to give each facet an independent but still 1:1 x/y scale
   # via ggh4x::facetted_pos_scales() because coord_fixed() doesn't support facet_wrap(scales = "free")
@@ -1902,10 +1894,18 @@ plot_global_nm <- function(df, sensor_Y){
     x_vec <- df_prep_i[[sensor_X_labs$sensor_col]]
     y_vec <- df_prep_i[[sensor_Y_labs$sensor_col]]
 
+    # Unique satellite days for this site only
+    unique_days_i <- df_prep_i |>
+      dplyr::select(file_name) |>
+      mutate(date = sapply(str_split(file_name, "_"), "[[", 2)) |>
+      mutate(date = sapply(str_split(date, "T"), "[[", 1)) |>
+      distinct(date) |>
+      mutate(date = as.Date(date, format = "%Y%m%d"))
+
     df_stats_i <- base_stats(x_vec, y_vec) |>
       mutate(site_name = site_i,
              max_axis = max(x_vec, y_vec, na.rm = TRUE),
-             label = paste0("n: ", n, " (", nrow(unique_days), ")",
+             label = paste0("n: ", n, " (", nrow(unique_days_i), ")",
                             "\nS: ", sprintf("%.2f", Slope_II), "±",
                             sprintf("%.2f", abs((Slope_II_high - Slope_II_low) / 2)),
                             "\nβ: ", sprintf("%.1f", Bias_50),

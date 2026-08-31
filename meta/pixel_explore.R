@@ -192,6 +192,82 @@ p_clean_water <- ggplot() +
 ggsave(file.path(out_dir, "clean_water_polygon_NE.png"), p_clean_water, width = 9, height = 7.5)
 
 
+# Hand-drawn oyster-bed polygons, W/SW/NW of station (EDIT ME) ---------------
+# First-guess polygons tracing the visible oyster-farming rows: one large
+# contiguous field W/SW/NW of the station, plus two small isolated clusters
+# roughly NNE of the station (spotted while building clean_water_polygon,
+# above -- separated from the main field by a stretch of clear water, not
+# part of it). Traced by eye off Esri.WorldImagery at zoom 17 using 0.001 deg
+# coordinate grid overlays for calibration, same approach as clean_water_sf.
+# Meant as a starting point for manual refinement, not a finished mask.
+#
+# Known limit: Esri's tile coverage gap (see clean_water_polygon comment
+# above and the Figures section below) starts right around lon 3.647 here --
+# the field's rows are still visibly running up to and past that edge, so its
+# true western extent is unverifiable from this basemap. main_field's west
+# boundary is set at the visible limit (~3.647), not the field's real edge --
+# extend it further west by hand if the true boundary is known from another
+# source. North/south/east edges (coastline, and the field's own NE boundary
+# down to where it thins out just past the station) were fully visible and
+# traced with the imagery for support, so those should be closer to accurate.
+
+main_field <- tribble(
+  ~lon,   ~lat,
+  3.6525, 43.4465,
+  3.6550, 43.4445,
+  3.6580, 43.4420,
+  3.6600, 43.4400,
+  3.6615, 43.4375,
+  3.6635, 43.4355,
+  3.6645, 43.4345,
+  3.6600, 43.4300,
+  3.6540, 43.4285,
+  3.6470, 43.4280,
+  3.6470, 43.4460,
+  3.6525, 43.4465  # closes the ring
+)
+cluster_nne_1 <- tribble(
+  ~lon,   ~lat,
+  3.6655, 43.4400,
+  3.6655, 43.4415,
+  3.6700, 43.4415,
+  3.6700, 43.4400,
+  3.6655, 43.4400  # closes the ring
+)
+cluster_nne_2 <- tribble(
+  ~lon,   ~lat,
+  3.6655, 43.4385,
+  3.6655, 43.4398,
+  3.6695, 43.4398,
+  3.6695, 43.4385,
+  3.6655, 43.4385  # closes the ring
+)
+
+as_cluster_sf <- function(coords, label){
+  st_sf(cluster = label, geometry = st_sfc(st_polygon(list(as.matrix(coords))), crs = 4326))
+}
+oyster_bed_sf <- bind_rows(
+  as_cluster_sf(main_field, "main_field"),
+  as_cluster_sf(cluster_nne_1, "cluster_NNE_1"),
+  as_cluster_sf(cluster_nne_2, "cluster_NNE_2")
+)
+
+pad5 <- 0.012
+map_bbox5 <- st_bbox(c(xmin = db_centroid$lon - pad5 * 1.6, xmax = db_centroid$lon + pad5 * 0.5,
+                        ymin = db_centroid$lat - pad5, ymax = db_centroid$lat + pad5),
+                      crs = 4326) |> st_as_sfc() |> st_sf()
+oyster_bed_tile <- get_tiles(map_bbox5, provider = "Esri.WorldImagery", crop = TRUE, zoom = 17)
+
+p_oyster_beds <- ggplot() +
+  geom_spatraster_rgb(data = oyster_bed_tile) +
+  geom_sf(data = oyster_bed_sf, aes(fill = cluster), alpha = 0.3, colour = "orange", linewidth = 1) +
+  geom_point(aes(x = db_centroid$lon, y = db_centroid$lat), colour = "red", shape = 4, size = 4, stroke = 2) +
+  coord_sf(crs = st_crs(oyster_bed_tile), expand = FALSE) +
+  labs(title = "THFR oyster-bed polygons, W/SW/NW (+ 2 small NNE clusters)", x = NULL, y = NULL) +
+  theme_bw()
+ggsave(file.path(out_dir, "oyster_bed_polygons.png"), p_oyster_beds, width = 10, height = 8.5)
+
+
 # Single-matchup inspection (EDIT ME) ----------------------------------------
 # Re-run this section for different sensors/dates to look at one matchup's
 # raw 5x5 pixel grid by hand.
