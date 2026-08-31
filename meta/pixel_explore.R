@@ -145,7 +145,7 @@ ggsave(file.path(out_dir, paste0("single_matchup_", sensor_Y_pick, "_", df_pick$
 # write_csv(pixel_all, file.path(out_dir, "pixel_deviation_all.csv"))
 pixel_all <- read_csv("meta/pixel_explore_output/pixel_deviation_all.csv")
 
-  # Data-quality guard: a handful of HYPERNETS scans in thfr_2025.db carry the
+# Data-quality guard: a handful of HYPERNETS scans in thfr_2025.db carry the
 # raw NetCDF fill-value sentinel (9.9692099683868690e36) in Hyp instead of NA
 # Confirmed on 10 (matchup_id, sensor_Y) combinations across 2025-07-17,
 # 2025-07-25, 2025-10-27 and 2025-11-03 (2026-08-27). Confirmed NOT present in
@@ -245,6 +245,25 @@ for(sY in unique(pixel_all$sensor_Y)){
     theme_bw() +
     theme(legend.position = "none")
   ggsave(file.path(out_dir, paste0("deviation_boxplot_", sY, ".png")), p_box, width = 10, height = 8)
+
+  # Boxplots per exact pixel position (finer-grained than quadrant, above)
+  pixel_pos_levels <- df_s |>
+    distinct(pixel_pos) |>
+    separate(pixel_pos, into = c("col", "row"), sep = ",", convert = TRUE, remove = FALSE) |>
+    arrange(col, row) |>
+    pull(pixel_pos)
+
+  p_box_pixel <- df_s |>
+    mutate(pixel_pos = factor(pixel_pos, levels = pixel_pos_levels)) |>
+    ggplot(aes(x = pixel_pos, y = deviation, fill = pixel_pos)) +
+    geom_boxplot(outlier.size = 0.5) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    facet_wrap(~wavelength_facet, scales = "free_y") +
+    labs(title = paste0("THFR ", sY, " -- pixel deviation from HYPERNETS by pixel position"),
+         x = "Pixel position (col,row within 5x5 box)", y = "Sat pixel RHOW - Hyp RHOW") +
+    theme_bw() +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+  ggsave(file.path(out_dir, paste0("deviation_boxplot_pixelpos_", sY, ".png")), p_box_pixel, width = 12, height = 9)
 
   # Line plot of all degrees 0-360
   # NB: subsampled for the large sensors (PACE especially, 2.85M pooled rows)
