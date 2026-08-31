@@ -29,21 +29,27 @@ matchup_MODIS <- read_csv("output/matchup_stats_RHOW_MODIS.csv", show_col_types 
 file_list_MODIS <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/",
                                          pattern = "AQUA", full.names = TRUE, recursive = TRUE), pattern = "csv")
 
-# Load base W_nm matchup values
-base_MODIS <- plyr::ldply(file_list_MODIS, load_matchup_long, .parallel = TRUE)
+# Load base W_nm matchup values, tagging each row with the site_name derived from its own
+# file's full path -- raw matchup filenames are not unique across sites (see path_site_name()
+# in code/0_functions.R), so this must happen before any basename-only matching/joining
+base_MODIS <- furrr::future_map_dfr(file_list_MODIS, function(f){
+  load_matchup_long(f) |> mutate(site_name = path_site_name(f), .before = 1)
+}, .options = furrr_options(seed = TRUE))
 
-# Join for full range of stats
-join_MODIS <- right_join(base_MODIS, matchup_MODIS, by = join_by(file_name))
+# Join for full range of stats -- keyed on (file_name, site_name), not file_name alone
+join_MODIS <- right_join(base_MODIS, matchup_MODIS, by = join_by(file_name, site_name))
 
 # Check satellite variance in files
 # NB: High THFR AQUA CVs are genuine failed AC retrievals (confirmed 2026-07-14, see upstream-data-bugs.md).
-sat_var_MODIS <- plyr::ldply(file_list_MODIS, sat_var_check, cv_limit = cv_limit_choice, .parallel = TRUE)
+sat_var_MODIS <- furrr::future_map_dfr(file_list_MODIS, sat_var_check, cv_limit = cv_limit_choice, .options = furrr_options(seed = TRUE)) |>
+  mutate(site_name = path_site_name(file_name), file_name = basename(file_name))
 sat_var_filt_MODIS <- filter(sat_var_MODIS, cv > cv_limit)
-filter_var_MODIS <- filter(matchup_MODIS, file_name %in% basename(sat_var_filt_MODIS$file_name)) |>
+filter_var_MODIS <- inner_join(matchup_MODIS, dplyr::select(sat_var_filt_MODIS, file_name, site_name),
+                                by = c("file_name", "site_name")) |>
   mutate(val_filter = paste0("CV >= ", cv_limit_choice, "%"))
 
 # Plot matchup by Error + Bias
-plot_matchup_Error_Bias(join_MODIS, "Hyp", "AQUA")
+# plot_matchup_Error_Bias(join_MODIS, "Hyp", "AQUA")
 
 # Standardised outlier gate: CV only (see cv_limit_choice above)
 filter_MODIS <- filter_var_MODIS
@@ -63,12 +69,12 @@ filter_join_MODIS <- right_join(join_MODIS, filter_MODIS)
 clean_join_MODIS <- anti_join(join_MODIS, filter_MODIS)
 
 # Plot matchups by date
-plot_matchup_date(clean_join_MODIS, "Hyp", "AQUA")
+# plot_matchup_date(clean_join_MODIS, "Hyp", "AQUA")
 
 # Plot all wavelength matchups
-plot_matchup_nm(join_MODIS, "Hyp", "AQUA")
-plot_matchup_nm(filter_join_MODIS, "Hyp", "AQUA")
-plot_matchup_nm(clean_join_MODIS, "Hyp", "AQUA")
+# plot_matchup_nm(join_MODIS, "Hyp", "AQUA")
+# plot_matchup_nm(filter_join_MODIS, "Hyp", "AQUA")
+# plot_matchup_nm(clean_join_MODIS, "Hyp", "AQUA")
 
 
 ## VIIRS -------------------------------------------------------------------
@@ -84,22 +90,28 @@ matchup_VIIRS <- read_csv("output/matchup_stats_RHOW_VIIRS.csv", show_col_types 
 file_list_VIIRS <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/",
                                          pattern = "SNPP|JPSS1|JPSS2", full.names = TRUE, recursive = TRUE), pattern = "csv")
 
-# Load base W_nm matchup values
-base_VIIRS <- plyr::ldply(file_list_VIIRS, load_matchup_long, .parallel = TRUE)
+# Load base W_nm matchup values, tagging each row with the site_name derived from its own
+# file's full path -- raw matchup filenames are not unique across sites (see path_site_name()
+# in code/0_functions.R), so this must happen before any basename-only matching/joining
+base_VIIRS <- furrr::future_map_dfr(file_list_VIIRS, function(f){
+  load_matchup_long(f) |> mutate(site_name = path_site_name(f), .before = 1)
+}, .options = furrr_options(seed = TRUE))
 
-# Join for full range of stats
-join_VIIRS <- right_join(base_VIIRS, matchup_VIIRS, by = join_by(file_name))
+# Join for full range of stats -- keyed on (file_name, site_name), not file_name alone
+join_VIIRS <- right_join(base_VIIRS, matchup_VIIRS, by = join_by(file_name, site_name))
 
 # Check satellite variance in files
-sat_var_VIIRS <- plyr::ldply(file_list_VIIRS, sat_var_check, cv_limit = cv_limit_choice, .parallel = TRUE)
+sat_var_VIIRS <- furrr::future_map_dfr(file_list_VIIRS, sat_var_check, cv_limit = cv_limit_choice, .options = furrr_options(seed = TRUE)) |>
+  mutate(site_name = path_site_name(file_name), file_name = basename(file_name))
 sat_var_filt_VIIRS <- filter(sat_var_VIIRS, cv > cv_limit)
-filter_var_VIIRS <- filter(matchup_VIIRS, file_name %in% basename(sat_var_filt_VIIRS$file_name)) |>
+filter_var_VIIRS <- inner_join(matchup_VIIRS, dplyr::select(sat_var_filt_VIIRS, file_name, site_name),
+                                by = c("file_name", "site_name")) |>
   mutate(val_filter = paste0("CV >= ", cv_limit_choice, "%"))
 
 # Plot matchup by Error + Bias
 # NB: SNPP is used as the reference platform for these diagnostic plots; the filtering below
 # still screens outliers across all three VIIRS platforms (SNPP, JPSS1, JPSS2)
-plot_matchup_Error_Bias(join_VIIRS, "Hyp", "SNPP")
+# plot_matchup_Error_Bias(join_VIIRS, "Hyp", "SNPP")
 
 # Standardised outlier gate: CV only (see cv_limit_choice above)
 filter_VIIRS <- filter_var_VIIRS
@@ -119,12 +131,12 @@ filter_join_VIIRS <- right_join(join_VIIRS, filter_VIIRS)
 clean_join_VIIRS <- anti_join(join_VIIRS, filter_VIIRS)
 
 # Plot matchups by date
-plot_matchup_date(filter_join_VIIRS, "Hyp", "SNPP")
+# plot_matchup_date(filter_join_VIIRS, "Hyp", "SNPP")
 
 # Plot all wavelength matchups
-plot_matchup_nm(join_VIIRS, "Hyp", "SNPP")
-plot_matchup_nm(filter_join_VIIRS, "Hyp", "SNPP")
-plot_matchup_nm(clean_join_VIIRS, "Hyp", "SNPP")
+# plot_matchup_nm(join_VIIRS, "Hyp", "SNPP")
+# plot_matchup_nm(filter_join_VIIRS, "Hyp", "SNPP")
+# plot_matchup_nm(clean_join_VIIRS, "Hyp", "SNPP")
 
 
 ## OLCI --------------------------------------------------------------------
@@ -140,22 +152,28 @@ matchup_OLCI <- read_csv("output/matchup_stats_RHOW_OLCI.csv", show_col_types = 
 file_list_OLCI <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/",
                                          pattern = "S3", full.names = TRUE, recursive = TRUE), pattern = "csv")
 
-# Load base W_nm matchup values
-base_OLCI <- plyr::ldply(file_list_OLCI, load_matchup_long, .parallel = TRUE)
+# Load base W_nm matchup values, tagging each row with the site_name derived from its own
+# file's full path -- raw matchup filenames are not unique across sites (see path_site_name()
+# in code/0_functions.R), so this must happen before any basename-only matching/joining
+base_OLCI <- furrr::future_map_dfr(file_list_OLCI, function(f){
+  load_matchup_long(f) |> mutate(site_name = path_site_name(f), .before = 1)
+}, .options = furrr_options(seed = TRUE))
 
-# Join for full range of stats
-join_OLCI <- right_join(base_OLCI, matchup_OLCI, by = join_by(file_name)) |>
+# Join for full range of stats -- keyed on (file_name, site_name), not file_name alone
+join_OLCI <- right_join(base_OLCI, matchup_OLCI, by = join_by(file_name, site_name)) |>
   filter(Hyp <= 1)
 
 # Check satellite variance in files
-sat_var_OLCI <- plyr::ldply(file_list_OLCI, sat_var_check, cv_limit = cv_limit_choice, .parallel = TRUE) # Many high CV obs
+sat_var_OLCI <- furrr::future_map_dfr(file_list_OLCI, sat_var_check, cv_limit = cv_limit_choice, .options = furrr_options(seed = TRUE)) |> # Many high CV obs
+  mutate(site_name = path_site_name(file_name), file_name = basename(file_name))
 sat_var_filt_OLCI <- filter(sat_var_OLCI, cv > cv_limit)
-filter_var_OLCI <- filter(matchup_OLCI, file_name %in% basename(sat_var_filt_OLCI$file_name)) |>
+filter_var_OLCI <- inner_join(matchup_OLCI, dplyr::select(sat_var_filt_OLCI, file_name, site_name),
+                               by = c("file_name", "site_name")) |>
   mutate(val_filter = paste0("CV >= ", cv_limit_choice, "%"))
 
 # Plot matchup by Error + Bias
 # NB: There are more S3A matchups, so using that sensor for analysis
-plot_matchup_Error_Bias(join_OLCI, "Hyp", "S3B") # Error > 50
+# plot_matchup_Error_Bias(join_OLCI, "Hyp", "S3B") # Error > 50
 
 # Standardised outlier gate: CV only (see cv_limit_choice above)
 filter_OLCI <- filter_var_OLCI
@@ -175,12 +193,12 @@ filter_join_OLCI <- right_join(join_OLCI, filter_OLCI)
 clean_join_OLCI <- anti_join(join_OLCI, filter_OLCI)
 
 # Plot matchups by date
-plot_matchup_date(filter_join_OLCI, "Hyp", "S3B")
+# plot_matchup_date(filter_join_OLCI, "Hyp", "S3B")
 
 # Plot all wavelength matchups
-plot_matchup_nm(join_OLCI, "Hyp", "S3B")
-plot_matchup_nm(filter_join_OLCI, "Hyp", "S3B")
-plot_matchup_nm(clean_join_OLCI, "Hyp", "S3B")
+# plot_matchup_nm(join_OLCI, "Hyp", "S3B")
+# plot_matchup_nm(filter_join_OLCI, "Hyp", "S3B")
+# plot_matchup_nm(clean_join_OLCI, "Hyp", "S3B")
 
 
 ## OCI ---------------------------------------------------------------------
@@ -198,22 +216,28 @@ matchup_OCI <- read_csv("output/matchup_stats_RHOW_OCI.csv", show_col_types = FA
 file_list_OCI <- stringr::str_subset(string = dir("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/",
                                          pattern = "PACE", full.names = TRUE, recursive = TRUE), pattern = "csv")
 
-# Load base W_nm matchup values
-base_OCI <- plyr::ldply(file_list_OCI, load_matchup_long, .parallel = TRUE)
+# Load base W_nm matchup values, tagging each row with the site_name derived from its own
+# file's full path -- raw matchup filenames are not unique across sites (see path_site_name()
+# in code/0_functions.R), so this must happen before any basename-only matching/joining
+base_OCI <- furrr::future_map_dfr(file_list_OCI, function(f){
+  load_matchup_long(f) |> mutate(site_name = path_site_name(f), .before = 1)
+}, .options = furrr_options(seed = TRUE))
 
-# Join for full range of stats
-join_OCI <- right_join(base_OCI, matchup_OCI, by = join_by(file_name))
+# Join for full range of stats -- keyed on (file_name, site_name), not file_name alone
+join_OCI <- right_join(base_OCI, matchup_OCI, by = join_by(file_name, site_name))
 
 # Check satellite variance in files
-sat_var_OCI <- plyr::ldply(file_list_OCI, sat_var_check, cv_limit = cv_limit_choice, .parallel = TRUE)
+sat_var_OCI <- furrr::future_map_dfr(file_list_OCI, sat_var_check, cv_limit = cv_limit_choice, .options = furrr_options(seed = TRUE)) |>
+  mutate(site_name = path_site_name(file_name), file_name = basename(file_name))
 sat_var_filt_OCI <- filter(sat_var_OCI, cv > 50)#cv_limit) # TODO reimplement once these high CV values are understood.
-filter_var_OCI <- filter(matchup_OCI, file_name %in% basename(sat_var_filt_OCI$file_name)) |>
+filter_var_OCI <- inner_join(matchup_OCI, dplyr::select(sat_var_filt_OCI, file_name, site_name),
+                              by = c("file_name", "site_name")) |>
   mutate(val_filter = paste0("CV >= 50"))#, cv_limit_choice, "%")) # TODO reimplement once these high CV values are understood.
 
 # Plot matchup by Error + Bias
 # NB: PACE_V30 is visually the least similar, so using this platform as the reference; the
 # filtering below still screens outliers across all three PACE versions (V2, V30, V31)
-plot_matchup_Error_Bias(join_OCI, "Hyp", "PACE")
+# plot_matchup_Error_Bias(join_OCI, "Hyp", "PACE")
 
 # Standardised outlier gate: CV only (see cv_limit_choice above)
 filter_OCI <- filter_var_OCI
@@ -233,21 +257,23 @@ filter_join_OCI <- right_join(join_OCI, filter_OCI)
 clean_join_OCI <- anti_join(join_OCI, filter_OCI)
 
 # Plot matchups by date
-plot_matchup_date(filter_join_OCI, "Hyp", "PACE")
+# plot_matchup_date(filter_join_OCI, "Hyp", "PACE")
 
 # Plot all wavelength matchups
-plot_matchup_nm(join_OCI, "Hyp", "PACE")
-plot_matchup_nm(filter_join_OCI, "Hyp", "PACE")
-plot_matchup_nm(clean_join_OCI, "Hyp", "PACE")
+# plot_matchup_nm(join_OCI, "Hyp", "PACE")
+# plot_matchup_nm(filter_join_OCI, "Hyp", "PACE")
+# plot_matchup_nm(clean_join_OCI, "Hyp", "PACE")
 
 
 ## Combine satellite outliers ----------------------------------------------
 
 print("Combining results and exiting")
 
-# Stack all filtered data.frames with file names that appear to be outliers
+# Stack all filtered data.frames with file names that appear to be outliers. site_name is kept
+# alongside file_name (not just file_name) because raw matchup filenames are not unique across
+# sites (see path_site_name() in code/0_functions.R) -- global_stats() filters this file by both.
 satellite_outliers <- rbind(filter_OLCI, filter_VIIRS, filter_MODIS, filter_OCI) |>
-  dplyr::select(file_name, sensor_X, sensor_Y, comp_sensors,
+  dplyr::select(file_name, site_name, sensor_X, sensor_Y, comp_sensors,
                 dateTime_X, dateTime_Y, Slope_II, Error_50, Bias_50, val_filter) |>
   distinct()
 write_csv(satellite_outliers, "meta/satellite_outliers.csv")

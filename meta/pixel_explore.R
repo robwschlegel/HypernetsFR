@@ -172,26 +172,9 @@ for(sY in sensor_Y_thfr){
 
 
 # Hand-drawn "clean water" polygon, N/NE of station --------------------------
-# A polygon that traces the open water north/north-east of THFR,
-# deliberately excluding land and the visible oyster-bed rows.
-# Traced by eye off Esri.WorldImagery at zoom 17
-# using a fine (0.001 deg) coordinate grid overlay for calibration.
-
-clean_water_polygon <- tribble(
-  ~lon,   ~lat,
-  3.6660, 43.4350,
-  3.6625, 43.4385,
-  3.6595, 43.4415,
-  3.6595, 43.4440,
-  3.6630, 43.4448,
-  3.6660, 43.4450,
-  3.6710, 43.4442,
-  3.6705, 43.4400,
-  3.6690, 43.4375,
-  3.6685, 43.4350,
-  3.6660, 43.4350  # closes the ring
-)
-clean_water_sf <- st_sf(geometry = st_sfc(st_polygon(list(as.matrix(clean_water_polygon))), crs = 4326))
+# clean_water_polygon / clean_water_sf are now defined in code/0_functions.R (single-sourced so
+# this exploratory script and the THFR_poly pipeline site -- db_export_matchups_poly() /
+# pixel_filter_clean_water() -- never drift apart), already available here via source() above.
 
 pad4 <- 0.012
 map_bbox4 <- st_bbox(c(xmin = db_centroid$lon - pad4, xmax = db_centroid$lon + pad4,

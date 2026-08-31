@@ -19,6 +19,7 @@ library(future)
 library(furrr)
 library(ggh4x) # For independent per-facet axis limits (facetted_pos_scales()) alongside a true
                 # 1:1 x/y aspect ratio per panel -- see plot_global_nm())
+library(sf) # For the clean_water_sf point-in-polygon pixel filter -- see db_export_matchups_site()
 
 
 # Setup -------------------------------------------------------------------
@@ -63,6 +64,17 @@ colour_nm_func <- function(sensor_Y){
 # Function that assembles file directory based on desired variable and sensors
 file_path_build <- function(site_name, sat_name){
   file_path <- paste0("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/", site_name, "/RHOW_HYPERNETS_vs_", sat_name)
+}
+
+# Inverse of file_path_build(): recover a matchup file's site_name from its full path
+# (".../FR/<site_name>/RHOW_HYPERNETS_vs_<sat_name>/<file>.csv"). Needed because raw matchup
+# filenames are not unique *across* sites -- e.g. the same satellite pass can produce an
+# identically-named export at both MAFR and THFR when their HYPERNETS scan schedules happen to
+# align on the same 15-min slots (confirmed: 43 such collisions for OLCI alone). Any code that
+# joins/matches on file_name across a multi-site file list (see code/2_outliers.R) must include
+# site_name in the key, or it silently mixes rows from different sites together.
+path_site_name <- function(path){
+  basename(dirname(dirname(path)))
 }
 
 # Load a single matchup file and create mean values from all replicates
@@ -194,10 +206,6 @@ load_matchups_folder <- function(site_name, sat_name, long = FALSE){
 }
 
 # Convenience function to get lon/lat coords from HYPERNETS .nc files
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/Trios_processed_data/TARA_HyperBOOST_Ed_20240323_20240821_Version_20250911.sb"
-# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/Hypernets_processed_data/07/SEQ20240807T123357/HYPERNETS_W_MAFR_L1B_RAD_20240807T1233_20240912T1039_v2.0.nc"
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/Hypernets_processed_data/10/SEQ20240810T173010/HYPERNETS_W_MAFR_L1B_RAD_20240810T1730_20240912T1013_v2.0.nc"
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/Tara/Hypernets_processed_data/18/SEQ20240818T093051/HYPERNETS_W_MAFR_L0A_BLA_20240818T0930_20240912T1031_v2.0.nc"
 load_HYPERNETS_coords <- function(file_name){
   ncdump::NetCDF(file_name)$attribute$global[c("site_longitude", "site_latitude")]
 }
@@ -292,7 +300,7 @@ sat_var_check <- function(file_name, cv_limit = 30){
   # Check for variance in W_nm columns
   # df_check <- df_match |> 
   #   mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor)) |>
-  #   filter(!(sensor %in% c("Hyp_nosc", "Hyp", "TRIOS", "HYPERPRO"))) |> 
+  #   filter(!(sensor %in% c("Hyp_nosc", "Hyp"))) |>
   #   dplyr::select(-day, -time, -latitude, -longitude, -radiometer_id, -type, -pixel_pos) |> 
   #   pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
   #   pivot_wider(names_from = data_type, values_from = value) |>
@@ -333,12 +341,13 @@ sat_var_check <- function(file_name, cv_limit = 30){
 # to MAFR, see Doxaran et al. 2024's analogous Berre lagoon vs Gironde Estuary contrast)
 # are both present on disk as of 2026-07-14. Additional sites are picked up automatically
 # the moment their data folder exists on disk. 
-# THFR_NE (added 2026-08-28) is a third, independent site alongside MAFR/THFR.
-# The NE-quadrant-filtered THFR re-analysis (see the TEMPORARY section in this file and 
-# meta/pixel_explore.R), intentionally kept as its own site for direct three-way 
-# comparison rather than replacing THFR anywhere in the pipeline.
+# THFR_NE (added 2026-08-28) and THFR_poly (added 2026-08-28) are independent derived sites
+# alongside MAFR/THFR -- NE-quadrant and clean-water-polygon-filtered THFR re-analyses
+# respectively (see the TEMPORARY section in this file and meta/pixel_explore.R), each
+# intentionally kept as its own site for direct comparison rather than replacing THFR anywhere
+# in the pipeline.
 available_sites <- function(sat_name){
-  candidate_sites <- c("MAFR", "THFR", "THFR_NE")
+  candidate_sites <- c("MAFR", "THFR", "THFR_NE", "THFR_poly")
   site_present <- vapply(candidate_sites, function(s) dir.exists(file_path_build(s, sat_name)), logical(1))
   sites_found <- candidate_sites[site_present]
   if(length(sites_found) == 0) stop(paste0("No site data found on disk for sensor: ", sat_name))
@@ -845,17 +854,22 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   # List all files in directory
   file_list <- list.files(folder_path, pattern = "*.csv", full.names = TRUE)
   
-  # Load individual matchup results to filter file list and for further use
-  match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |> 
+  # Load individual matchup results to filter file list and for further use, restricted to this
+  # site -- raw matchup filenames are not unique *across* sites (see path_site_name()), so an
+  # unrestricted basename match below could wrongly include/exclude a file based on another
+  # site's namesake rather than this one's own QC/outlier status
+  match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |>
+    filter(.data$site_name == .env$site_name) |>
     dplyr::select(file_name) |> distinct()
   if(nrow(match_base_details) == 0) stop("Individual matchup file not loaded correctly.")
-  
+
   # Filter accordingly
   # NB: This creates the list of valid matchups after screening for spatiotemporal range
   file_list_clean <- file_list[basename(file_list) %in% match_base_details$file_name]
-  
-  # Get outlier lists
-  outliers_sat <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE)
+
+  # Get outlier lists, restricted to this site (see NB above)
+  outliers_sat <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) |>
+    filter(.data$site_name == .env$site_name)
 
   # Remove outlier files
   # NB: This creates the list of valid matchups after screening for outliers in the single matchup QC process
@@ -1401,7 +1415,7 @@ db_matchup_all <- function(db_path, sensor_Y_vec = db_satellite_names, agg_metho
 # satellite pixels get averaged.
 # df_ne_matchup: one matchup_id's NE-quadrant satellite pixel rows for one sensor_Y (a subset of
 # db_matchup_pixels()'s output, already filtered to pixel_lat >= lat_Hyp & pixel_lon >= lon_Hyp)
-write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir){
+write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir, tag = "NE"){
   sat_dt_col <- paste0("dateTime_", sensor_Y)
 
   hyp_ts <- format(df_ne_matchup$dateTime_Hyp[1], "%Y%m%dT%H%M%S", tz = "Europe/Paris")
@@ -1485,23 +1499,77 @@ write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir){
       }
     }
 
-    out_name <- sub("\\.csv$", "_NE.csv", basename(orig_file))
+    out_name <- sub("\\.csv$", paste0("_", tag, ".csv"), basename(orig_file))
     write_delim(df_new, file.path(out_dir, out_name), delim = ";", quote = "needed", na = "")
   }
   invisible(NULL)
 }
 
+# Pixel-inclusion rules -------------------------------------------------------
+# Each takes the QC-gated per-pixel df_pixel (from db_matchup_pixels(), already filtered to
+# matchups passing the time/distance gate) and returns the subset of rows to keep. Passed into
+# db_export_matchups_site() below -- add a new derived site by writing one of these plus a one-
+# line wrapper, nothing else needs to change.
+
+# Restrict to the inner 3x3 grid (col/row in -1..1), then to the NE quadrant relative to the true
+# station position. The 3x3 restriction matches the box size Hypernets_matchups actually exports
+# to .csv (confirmed by inspecting a real THFR file: pixel_pos values only span -1..1, even
+# though the .db's raw measure_data_rhow block stores the wider 5x5 grid col/row -2..2) --
+# excluding any pixel_pos containing "2" drops the outer ring. A hand-traced check on one S3A
+# matchup found an outer-ring pixel (pixel_pos "-1,2") carrying a large negative outlier value
+# that was dragging the NE-quadrant mean well below the true NE water signal; restricting to the
+# inner 3x3 grid removes exactly that kind of edge/outer-ring artifact.
+pixel_filter_ne_inner3x3 <- function(df_pixel){
+  df_pixel |>
+    filter(!grepl("2", pixel_pos)) |>
+    filter(pixel_lat >= lat_Hyp, pixel_lon >= lon_Hyp)
+}
+
+# Hand-drawn "clean water" polygon, N/NE of the THFR station -- traces open water while
+# deliberately excluding land and the visible oyster-bed rows. Traced by eye off
+# Esri.WorldImagery at zoom 17; see meta/pixel_explore.R's "clean_water_polygon_NE.png" for the
+# traced overlay and its own comments for known gaps (a couple of small oyster-table clusters not
+# yet excised). Starting point for manual refinement, not a finished mask -- single-sourced here
+# so meta/pixel_explore.R (which sources this file) and the pipeline never drift apart.
+clean_water_polygon <- tribble(
+  ~lon,   ~lat,
+  3.6660, 43.4350,
+  3.6625, 43.4385,
+  3.6595, 43.4415,
+  3.6595, 43.4440,
+  3.6630, 43.4448,
+  3.6660, 43.4450,
+  3.6710, 43.4442,
+  3.6705, 43.4400,
+  3.6690, 43.4375,
+  3.6685, 43.4350,
+  3.6660, 43.4350  # closes the ring
+)
+clean_water_sf <- st_sf(geometry = st_sfc(st_polygon(list(as.matrix(clean_water_polygon))), crs = 4326))
+
+# Keep only pixels whose true geolocation (pixel_lon/pixel_lat) falls inside clean_water_sf --
+# unlike pixel_filter_ne_inner3x3(), this is a pure real-world-geometry test, independent of the
+# pixel-box grid coordinates, so no inner/outer-ring restriction is needed on top of it.
+pixel_filter_clean_water <- function(df_pixel){
+  pts <- sf::st_as_sf(df_pixel, coords = c("pixel_lon", "pixel_lat"), crs = 4326, remove = FALSE)
+  df_pixel[lengths(sf::st_within(pts, clean_water_sf)) > 0, ]
+}
+
 # Regenerates THFR's raw per-matchup RHOW CSV files for every sensor_Y in a sensor family,
-# restricted to the NE quadrant. See the section comment above for full context. Matchups with
-# zero surviving NE pixels for a given sensor are skipped entirely (no file written). For the
-# coarser sensors (AQUA/VIIRS/PACE) this is expected to remove most matchups, since the box is
-# centered well outside the NE quadrant for those (see meta/pixel_explore_output/summary.md).
-# sensor_Z = "OLCI"
-db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+# restricted to whichever pixels pixel_filter_fn keeps, and written under a new site folder
+# named site_name (isolated from the real THFR/MAFR data). See the section comment above for full
+# context. Matchups with zero surviving pixels for a given sensor are skipped entirely (no file
+# written) -- for the coarser sensors (AQUA/VIIRS/PACE) this is expected to remove most matchups
+# under the NE+3x3 filter, since the box is centered well outside the NE quadrant for those (see
+# meta/pixel_explore_output/summary.md); a similarly small survival rate is expected under the
+# clean-water-polygon filter, which is deliberately small and close to the station.
+# sensor_Z = "OLCI"; site_name = "THFR_NE"; pixel_filter_fn = pixel_filter_ne_inner3x3; file_tag = "NE"
+db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_tag,
+                                     db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
   sensor_Y_list <- sensor_grid(sensor_Z)$sensor_Y |> unique()
 
   for(sensor_Y in sensor_Y_list){
-    message("db_export_matchups_ne: ", sensor_Y)
+    message("db_export_matchups_site(", site_name, "): ", sensor_Y)
     df_pixel <- tryCatch(db_matchup_pixels(db_path, sensor_Y),
                           warning = function(w){ message(conditionMessage(w)); tibble() })
     if(nrow(df_pixel) == 0) next
@@ -1513,7 +1581,9 @@ db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/O
     # matchup-level (constant per matchup_id), dist_km as returned by db_matchup_pixels() is
     # per-PIXEL (station-to-pixel, used for the bearing/quadrant diagnostics), so the
     # matchup-level distance (station-to-satellite-reference-position, matching how
-    # db_matchup_long()/process_sensor() gate distance) is recomputed here instead.
+    # db_matchup_long()/process_sensor() gate distance) is recomputed here instead. Both derived
+    # sites are reinterpretations of the same underlying THFR matchups, so this stays hardcoded
+    # to THFR's own QC policy regardless of site_name.
     sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
     df_pixel <- df_pixel |>
       mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
@@ -1523,29 +1593,28 @@ db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/O
       next
     }
 
-    # Restrict to the inner 3x3 grid (col/row in -1..1) before the NE-quadrant filter -- this
-    # matches the box size Hypernets_matchups actually exports to .csv (confirmed by inspecting
-    # a real THFR file: pixel_pos values only span -1..1, even though the .db's raw
-    # measure_data_rhow block stores the wider 5x5 grid col/row -2..2). Excluding any pixel_pos
-    # containing "2" drops the outer ring; a hand-traced check on one S3A matchup found an outer-
-    # ring pixel (pixel_pos "-1,2") carrying a large negative outlier value that was dragging the
-    # NE-quadrant mean well below the true NE water signal -- restricting to the inner 3x3 grid
-    # removes exactly that kind of edge/outer-ring artifact.
-    df_ne <- df_pixel |>
-      filter(!grepl("2", pixel_pos)) |>
-      filter(pixel_lat >= lat_Hyp, pixel_lon >= lon_Hyp)
-    if(nrow(df_ne) == 0){
-      message("  No NE-quadrant pixels survive for ", sensor_Y, " -- skipping")
+    df_filt <- pixel_filter_fn(df_pixel)
+    if(nrow(df_filt) == 0){
+      message("  No pixels survive the ", site_name, " filter for ", sensor_Y, " -- skipping")
       next
     }
 
-    out_dir <- file_path_build("THFR_NE", sensor_Y)
+    out_dir <- file_path_build(site_name, sensor_Y)
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-    for(mid in unique(df_ne$matchup_id)){
-      write_matchup_csv_ne(filter(df_ne, matchup_id == mid), sensor_Y, out_dir)
+    for(mid in unique(df_filt$matchup_id)){
+      write_matchup_csv_ne(filter(df_filt, matchup_id == mid), sensor_Y, out_dir, tag = file_tag)
     }
   }
+}
+
+# Thin, site-specific wrappers -- add a new derived site by writing one of these (plus, if the
+# inclusion rule is new, a pixel_filter_*() function above)
+db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  db_export_matchups_site(sensor_Z, "THFR_NE", pixel_filter_ne_inner3x3, "NE", db_path)
+}
+db_export_matchups_poly <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  db_export_matchups_site(sensor_Z, "THFR_poly", pixel_filter_clean_water, "poly", db_path)
 }
 
 
@@ -1696,8 +1765,6 @@ pretty_label_func <- function(char_string){
 }
 
 # Plot a single matchup in final format
-# sensor_X <- "HyperPRO"; sensor_Y <- "PACE v2.0"
-# sensor_X <- "HyperPRO"; sensor_Y <- "VIIRS SNPP"
 plot_matchup_single_nm <- function(df, sensor_X, sensor_Y){
 
   # Prep data
@@ -1909,13 +1976,13 @@ plot_global_nm <- function(df, sensor_Y){
                       aes_string(x = sensor_X_labs$sensor_col, y = sensor_Y_labs$sensor_col)) +
       geom_point(aes(colour = wavelength, shape = Platform), size = 2, alpha = point_alpha) +
       scale_colour_manual(values = colours_nm) +
-      facet_wrap(~site_name, scales = "free")
+      facet_wrap(~site_name, scales = "free", nrow = 1)
   } else {
     pl_base <- ggplot(data = df_sub,
                       aes_string(x = sensor_X_labs$sensor_col, y = sensor_Y_labs$sensor_col)) +
       geom_point(aes(colour = wavelength), alpha = point_alpha) +
       scale_colour_manual(values = colours_nm) +
-      facet_wrap(~site_name, scales = "free")
+      facet_wrap(~site_name, scales = "free", nrow = 1)
   }
   pl_clean <- pl_base +
     # Add 1:1 line
@@ -2025,7 +2092,7 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   match_fig <- plot_global_nm(match_filter, sensor_Y)
 
   # Save the individual figure
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 12, height = 5)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Y,".png"), match_fig, width = 16, height = 5)
 
   # Remove the legend when this panel will be stacked beneath another with a shared legend
   # Then return it (invisibly) for reuse by global_scatterplot_stack()
@@ -2060,6 +2127,6 @@ global_scatterplot_stack <- function(sensor_Z){
   # Stack panels vertically and exit
   fig_stack <- ggpubr::ggarrange(plotlist = fig_list, ncol = 1, nrow = sensor_count, heights = panel_heights) +
     ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 12, height = 5 * sensor_count)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 16, height = 5 * sensor_count)
 }
 

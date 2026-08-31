@@ -69,7 +69,7 @@ global_match_mean <- global_stats_all |>
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
             Error = mean(Error_50, na.rm = TRUE), .by = c("site_name", "var_name", "sensor_X", "sensor_Y"))
 global_match_mean_red <- global_stats_all |>
-  filter(sensor_X %in% c("HYPERNETS", "TRIOS", "HYPERPRO")) |>
+  filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
@@ -82,7 +82,7 @@ global_match_is_mean <- global_stats_all |>
   filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength >= 400, wavelength <= 600) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "HYPERNETS") |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
@@ -92,7 +92,7 @@ global_match_is_mean_red <- global_stats_all |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
   # filter(sensor_Y != "S3B") |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "HYPERNETS") |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             MRD_mean = mean(MRD_50, na.rm = TRUE),
             MRD_abs = mean(abs(MRD_50), na.rm = TRUE),
@@ -103,7 +103,7 @@ global_match_sat_mean <- global_stats_all |>
   filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength >= 400, wavelength <= 600) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "HYPERNETS") |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
             Bias_abs = mean(abs(Bias_50), na.rm = TRUE),
@@ -112,7 +112,7 @@ global_match_sat_mean_red <- global_stats_all |>
   filter(sensor_X %in% c("HYPERNETS")) |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "HYPERNETS") |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             MRD_mean = mean(MRD_50, na.rm = TRUE),
             MRD_abs = mean(abs(MRD_50), na.rm = TRUE),
@@ -129,7 +129,7 @@ global_match_bias_sign <- global_stats_all |>
 
 # Summarise per in situ platform against satellites
 global_match_bias_sign_remote <- global_match_bias_sign |>
-  filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  filter(sensor_Y != "HYPERNETS") |>
   filter(var_name == "RHOW") |>
   summarise(Bias_positive = sum(Bias_positive),
             Bias_negative = sum(Bias_negative), .by = c("sensor_X"))
@@ -137,7 +137,7 @@ global_match_bias_sign_remote <- global_match_bias_sign |>
 # Average bias and error values per waveband
 global_waveband_mean <- global_stats_all |>
   filter(sensor_X %in% c("HYPERNETS")) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "HYPERNETS") |>
   filter(var_name == "RHOW") |>
   summarise(Slope = mean(Slope_II, na.rm = TRUE),
             Bias_mean = mean(Bias_50, na.rm = TRUE),
@@ -145,7 +145,7 @@ global_waveband_mean <- global_stats_all |>
             Error = mean(Error_50, na.rm = TRUE), .by = c("wavelength"))
 global_waveband_mean_red <- global_stats_all |>
   filter(sensor_X %in% c("HYPERNETS")) |>
-  # filter(!(sensor_Y %in% c("HYPERNETS", "TRIOS", "HYPERPRO"))) |>
+  # filter(sensor_Y != "HYPERNETS") |>
   # filter(sensor_Y != "S3B") |>
   filter(var_name == "RHOW") |>
   filter(wavelength > 600) |>
