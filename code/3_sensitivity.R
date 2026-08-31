@@ -7,20 +7,19 @@
 # NB: unlike Doxaran et al. 2024 (who used a fixed 3x3-pixel-box/+-30 min window at
 # the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde),
 # this pipeline uses ONE distance ceiling (dist_limit = 10 km; raised from 5 km on
-# 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset -- see
-# manuscript/upstream-data-bugs.md Bug 9) for every site, but a SITE-SPECIFIC time
-# window (site_diff_time_limit() in
-# code/0_functions.R: 15 min at MAFR, 30 min at THFR). This script empirically checks
-# both choices, and is also where the eventual before/after comparison of
+# 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset.
+# See manuscript/upstream-data-bugs.md Bug 9) for every site, but a SITE-SPECIFIC time
+# window (site_diff_time_limit() in code/0_functions.R: 15 min at MAFR, 30 min at THFR). 
+# This script checks both choices, and is also where the eventual before/after comparison of
 # daily_average_matchups() (see code/0_functions.R) should live once that first-draft
 # function has been validated.
 #
 # This script is intended to be run AFTER 1_matchups_single.R (needs
 # output/matchup_stats_RHOW_*.csv and output/matchup_noQC_stats_RHOW_*.csv) and is
 # read by no other script, so it can safely be skipped in a quick production run once
-# its conclusions have been folded into the Methods text -- but re-run it whenever
-# THFR data change materially, since its whole purpose is to justify the window
-# choices with real data.
+# its conclusions have been folded into the Methods text.
+# But re-run it whenever THFR data change materially, 
+# since its whole purpose is to justify the window choices with real data.
 
 
 # Setup -------------------------------------------------------------------
@@ -32,8 +31,8 @@ source("code/0_functions.R")
 
 # Load all individual matchup stats across sensor families, both QC-passed and not,
 # so the full range of observed distances (not just the already-filtered subset) is visible
-matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup_noQC_stats_RHOW_", full.names = TRUE),
-                            read_csv, show_col_types = FALSE)
+matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup_noQC_stats_RHOW_", 
+                            full.names = TRUE), read_csv, show_col_types = FALSE)
 
 # Confirm nearest-pixel distances relative to the 10 km ceiling.
 # NB: dist_limit was raised from 5 km to 10 km on 2026-07-14 to accommodate a systematic
