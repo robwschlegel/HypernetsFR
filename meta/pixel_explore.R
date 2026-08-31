@@ -19,6 +19,9 @@
 # Setup ---------------------------------------------------------------------
 
 source("code/0_functions.R")
+library(sf)
+library(maptiles)
+library(tidyterra)
 
 db_path <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"
 out_dir <- "meta/pixel_explore_output"
@@ -58,7 +61,7 @@ pixel_bearing_quadrant <- function(df){
 # coordinate is what Hypernets_matchups queries against upstream.
 
 station_csv <- read_csv("meta/station_in_situ.csv", show_col_types = FALSE) |>
-  filter(site == "THFR")
+  dplyr::filter(site == "THFR")
 
 hyp_positions <- db_matchup_pixels(db_path, "S3A") |>
   dplyr::select(match_date, lon_Hyp, lat_Hyp) |>
@@ -72,6 +75,138 @@ print(station_offset)
 # All rows should show the same dist_km/bearing (one fixed station, GPS noise
 # aside). If so, meta/station_in_situ.csv is just stale/rounded and the
 # db's per-scan position is the one to trust (as used throughout this script).
+
+# Map of the two coordinate sources against a real basemap tile. The GADM
+# shapefile in meta/FRANCE_shapefile/ is a national-boundary (level 0) outline
+# only -- it does not resolve the Etang de Thau lagoon as water, so it can't
+# show local context here. OpenStreetMap tiles (via maptiles) are used instead;
+# Esri's satellite imagery has a coverage gap over this part of the lagoon and
+# returns broken placeholder tiles for it.
+db_centroid <- hyp_positions |> summarise(lon = mean(lon_Hyp), lat = mean(lat_Hyp))
+
+pad <- 0.05
+map_bbox <- st_bbox(c(xmin = min(c(hyp_positions$lon_Hyp, station_csv$lon)) - pad,
+                       xmax = max(c(hyp_positions$lon_Hyp, station_csv$lon)) + pad,
+                       ymin = min(c(hyp_positions$lat_Hyp, station_csv$lat)) - pad,
+                       ymax = max(c(hyp_positions$lat_Hyp, station_csv$lat)) + pad),
+                     crs = 4326) |> st_as_sfc() |> st_sf()
+thau_tile <- get_tiles(map_bbox, provider = "Esri.WorldImagery", crop = TRUE)
+
+pts_sf <- bind_rows(
+  station_csv |> transmute(lon, lat, source = "CSV (station_in_situ.csv)"),
+  hyp_positions |> transmute(lon = lon_Hyp, lat = lat_Hyp, source = "DB (per-scan GPS)")
+) |> st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+p_station_map <- ggplot() +
+  geom_spatraster_rgb(data = thau_tile) +
+  geom_segment(aes(x = station_csv$lon, y = station_csv$lat, xend = db_centroid$lon, yend = db_centroid$lat),
+               colour = "white", linetype = "dashed", linewidth = 0.6) +
+  geom_sf(data = pts_sf, aes(colour = source, shape = source), size = 3, stroke = 1.2, alpha = 0.7) +
+  scale_colour_manual(values = c("CSV (station_in_situ.csv)" = "red", "DB (per-scan GPS)" = "yellow")) +
+  scale_shape_manual(values = c("CSV (station_in_situ.csv)" = 17, "DB (per-scan GPS)" = 16)) +
+  coord_sf(crs = st_crs(thau_tile), expand = FALSE) +
+  labs(title = paste0("THFR station position -- CSV vs. DB GPS (offset ~", round(mean(station_offset$dist_km), 2), " km)"),
+       x = NULL, y = NULL, colour = NULL, shape = NULL) +
+  theme_bw()
+ggsave(file.path(out_dir, "thau_station_position_map.png"), p_station_map, width = 8, height = 7)
+
+
+# All per-pixel geographic positions, per sensor ------------------------------
+# Every individual matchup's raw pixel_lon/pixel_lat per pixel_pos (col,row
+# within the 5x5 box), rather than one average point per cell, coloured by
+# pixel_pos on a discrete colour scale (ordered numerically by col then row,
+# not alphabetically, so nearby grid cells get nearby colours). This shows
+# whether a sensor's pixel grid sits in a consistent spatial location/
+# orientation across passes (S3A/OLCI: a clean, tight, smoothly-graded
+# rotated 5x5 cloud) or is scattered/overlapping because swath geometry
+# rotates pass-to-pass (SNPP/VIIRS and PACE both show heavy inter-cell mixing).
+# Esri.WorldImagery is used so real water-surface detail (e.g. the oyster-bed
+# rows visible NW/W of the station) is visible under the points; note Esri has
+# a confirmed, persistent tile gap (renders black) over the western half of
+# the lagoon, which will show through for any sensor whose scatter reaches
+# that far, accepted as a known limitation rather than switching provider.
+# Facetting this on one shared basemap isn't possible: coord_sf() doesn't
+# support facet_wrap(scales = "free") in this ggplot2 version, and pixel
+# spacing differs ~5x between sensors, so each sensor gets its own tile/bbox/
+# ggsave() call instead, matching the other per-sensor figures in this script.
+
+for(sY in sensor_Y_thfr){
+  pixel_positions_all <- tryCatch({
+    db_matchup_pixels(db_path, sY) |>
+      distinct(matchup_id, pixel_pos, pixel_lon, pixel_lat, lon_Hyp, lat_Hyp)
+  }, warning = function(w){ message(conditionMessage(w)); tibble() })
+  if(nrow(pixel_positions_all) == 0) next
+
+  # Numeric col/row ordering (not alphabetical) drives the discrete legend --
+  # alphabetical order would put "-1,*" before "-2,*" (ASCII sorts 1 before 2).
+  pixel_pos_key <- pixel_positions_all |>
+    distinct(pixel_pos) |>
+    separate(pixel_pos, into = c("col", "row"), sep = ",", convert = TRUE, remove = FALSE) |>
+    arrange(col, row)
+
+  pixel_positions_all <- pixel_positions_all |>
+    mutate(pixel_pos = factor(pixel_pos, levels = pixel_pos_key$pixel_pos))
+
+  station_pos <- pixel_positions_all |> summarise(lon_Hyp = mean(lon_Hyp), lat_Hyp = mean(lat_Hyp))
+
+  pad3 <- 0.003
+  map_bbox3 <- st_bbox(c(xmin = min(c(pixel_positions_all$pixel_lon, station_pos$lon_Hyp)) - pad3,
+                          xmax = max(c(pixel_positions_all$pixel_lon, station_pos$lon_Hyp)) + pad3,
+                          ymin = min(c(pixel_positions_all$pixel_lat, station_pos$lat_Hyp)) - pad3,
+                          ymax = max(c(pixel_positions_all$pixel_lat, station_pos$lat_Hyp)) + pad3),
+                        crs = 4326) |> st_as_sfc() |> st_sf()
+  pixel_pos_tile <- get_tiles(map_bbox3, provider = "Esri.WorldImagery", crop = TRUE)
+
+  p_pixel_all_pos <- ggplot() +
+    geom_spatraster_rgb(data = pixel_pos_tile) +
+    geom_point(data = pixel_positions_all, aes(x = pixel_lon, y = pixel_lat, colour = pixel_pos),
+               size = 1.2, alpha = 0.5) +
+    geom_point(data = station_pos, aes(x = lon_Hyp, y = lat_Hyp), colour = "red", shape = 4, size = 3, stroke = 1.5) +
+    scale_colour_viridis_d(name = "pixel_pos", guide = guide_legend(ncol = 5, override.aes = list(size = 3, alpha = 1))) +
+    coord_sf(crs = st_crs(pixel_pos_tile), expand = FALSE) +
+    labs(title = paste0("THFR ", sY, " -- all satellite pixel positions, coloured by grid cell"),
+         x = NULL, y = NULL) +
+    theme_bw()
+  ggsave(file.path(out_dir, paste0("pixel_position_all_", sY, ".png")), p_pixel_all_pos, width = 9.5, height = 7)
+}
+
+
+# Hand-drawn "clean water" polygon, N/NE of station --------------------------
+# A polygon that traces the open water north/north-east of THFR,
+# deliberately excluding land and the visible oyster-bed rows.
+# Traced by eye off Esri.WorldImagery at zoom 17
+# using a fine (0.001 deg) coordinate grid overlay for calibration.
+
+clean_water_polygon <- tribble(
+  ~lon,   ~lat,
+  3.6660, 43.4350,
+  3.6625, 43.4385,
+  3.6595, 43.4415,
+  3.6595, 43.4440,
+  3.6630, 43.4448,
+  3.6660, 43.4450,
+  3.6710, 43.4442,
+  3.6705, 43.4400,
+  3.6690, 43.4375,
+  3.6685, 43.4350,
+  3.6660, 43.4350  # closes the ring
+)
+clean_water_sf <- st_sf(geometry = st_sfc(st_polygon(list(as.matrix(clean_water_polygon))), crs = 4326))
+
+pad4 <- 0.012
+map_bbox4 <- st_bbox(c(xmin = db_centroid$lon - pad4, xmax = db_centroid$lon + pad4,
+                        ymin = db_centroid$lat - pad4 * 0.6, ymax = db_centroid$lat + pad4),
+                      crs = 4326) |> st_as_sfc() |> st_sf()
+clean_water_tile <- get_tiles(map_bbox4, provider = "Esri.WorldImagery", crop = TRUE, zoom = 17)
+
+p_clean_water <- ggplot() +
+  geom_spatraster_rgb(data = clean_water_tile) +
+  geom_sf(data = clean_water_sf, fill = "cyan", alpha = 0.25, colour = "cyan", linewidth = 1.2) +
+  geom_point(aes(x = db_centroid$lon, y = db_centroid$lat), colour = "red", shape = 4, size = 4, stroke = 2) +
+  coord_sf(crs = st_crs(clean_water_tile), expand = FALSE) +
+  labs(title = "THFR clean-water polygon N/NE of station", x = NULL, y = NULL) +
+  theme_bw()
+ggsave(file.path(out_dir, "clean_water_polygon_NE.png"), p_clean_water, width = 9, height = 7.5)
 
 
 # Single-matchup inspection (EDIT ME) ----------------------------------------
@@ -88,11 +223,11 @@ date_pick <- as.Date("2025-11-30")#NA    # EDIT ME or NA to just take the first 
 matchup_id_pick <- if(is.na(date_pick)){
   df_pick_all$matchup_id[1]
 } else {
-  df_pick_all |> filter(match_date == date_pick) |> pull(matchup_id) |> head(1)
+  df_pick_all |> dplyr::filter(match_date == date_pick) |> pull(matchup_id) |> head(1)
 }
 
 # Check for differences
-df_pick <- df_pick_all |> filter(matchup_id == matchup_id_pick) |>
+df_pick <- df_pick_all |> dplyr::filter(matchup_id == matchup_id_pick) |>
   mutate(deviation = .data[[sensor_Y_pick]] - Hyp)
 
 # Spatial map of one wavelength's pixel box: raw satellite RHOW (left) and
@@ -100,7 +235,7 @@ df_pick <- df_pick_all |> filter(matchup_id == matchup_id_pick) |>
 # position marked and the quadrant split drawn in
 wavelength_pick <- df_pick$wavelength[which.min(abs(df_pick$wavelength - 560))] # nearest to 560 nm (green)
 
-p_raw <- df_pick |> filter(wavelength == wavelength_pick) |>
+p_raw <- df_pick |> dplyr::filter(wavelength == wavelength_pick) |>
   ggplot(aes(x = pixel_lon, y = pixel_lat)) +
   geom_point(aes(colour = .data[[sensor_Y_pick]]), size = 8) +
   geom_point(data = df_pick[1,], aes(x = lon_Hyp, y = lat_Hyp), shape = 4, size = 5, stroke = 2) +
@@ -112,7 +247,7 @@ p_raw <- df_pick |> filter(wavelength == wavelength_pick) |>
        x = "Longitude", y = "Latitude") +
   theme_bw()
 
-p_dev <- df_pick |> filter(wavelength == wavelength_pick) |>
+p_dev <- df_pick |> dplyr::filter(wavelength == wavelength_pick) |>
   ggplot(aes(x = pixel_lon, y = pixel_lat)) +
   geom_point(aes(colour = deviation), size = 8) +
   geom_point(data = df_pick[1,], aes(x = lon_Hyp, y = lat_Hyp), shape = 4, size = 5, stroke = 2) +
@@ -156,7 +291,7 @@ pixel_all <- read_csv("meta/pixel_explore_output/pixel_deviation_all.csv")
 # summary (a single 1e36 value swamps a mean). 
 # Better to flag upstream at the soruce rather than fixing in place here.
 n_before <- nrow(pixel_all)
-pixel_all <- pixel_all |> filter(abs(Hyp) < 10, abs(sat_value) < 10)
+pixel_all <- pixel_all |> dplyr::filter(abs(Hyp) < 10, abs(sat_value) < 10)
 message("Dropped ", n_before - nrow(pixel_all), " of ", n_before,
         " rows with a corrupted (fill-value) Hyp/sat_value before summarising")
 
@@ -189,7 +324,7 @@ quadrant_pair_list <- combn(c("NE", "NW", "SE", "SW"), 2, simplify = FALSE)
 #   quadrant_wide |>
 #     dplyr::rename(a = all_of(qa), b = all_of(qb)) |>
 #     dplyr::select(sensor_Y, wavelength, matchup_id, a, b) |>
-#     filter(!is.na(a), !is.na(b)) |>
+#     dplyr::filter(!is.na(a), !is.na(b)) |>
 #     reframe({
 #       if(n() >= 5){
 #         wt <- suppressWarnings(wilcox.test(a, b, paired = TRUE))
@@ -222,7 +357,7 @@ pace_nm_breaks <- c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050)
 pace_nm_labels <- c("351-400", "401-450", "451-500", "501-550", "551-600", "601-650", "651-700", "701-750", "751-800", "801-900", "901-1050")
 
 for(sY in unique(pixel_all$sensor_Y)){
-  df_s <- pixel_all |> filter(sensor_Y == sY)
+  df_s <- pixel_all |> dplyr::filter(sensor_Y == sY)
 
   # PACE is hyperspectral (801 discrete bands), facetting on raw wavelength
   # would produce 801 near-empty panels, so bin into the same broad bands
