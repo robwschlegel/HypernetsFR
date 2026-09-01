@@ -241,9 +241,16 @@ ggsave("figures/fig_4.png", fig_4, width = 12, height = ceiling(length(fig4_pane
 # Figure 11 ---------------------------------------------------------------
 
 ## Load global matchups
+# NB: restricted to each platform's own W_nm_out() bands (via the group_by/filter below) rather
+# than an arbitrary 400-600nm cutoff, so every band that sensor is meant to report shows up here --
+# PACE is exempted since W_nm_out("PACE") is a continuous 350:1150 range, not a fixed band set;
+# it's bucketed into broad bands below instead (pace_waveband_bucket(), same as elsewhere).
 df_matchups_global <- read_csv("output/global_stats_all.csv", show_col_types = FALSE) |>
   filter(sensor_X == "HYPERNETS", sensor_Y != "HYPERNETS") |>
   rename(Error = Error_50) |>
+  group_by(sensor_Y) |>
+  filter(sensor_Y == "PACE" | wavelength %in% W_nm_out(sensor_Y[1])) |>
+  ungroup() |>
   mutate(sensor_Y = case_when(sensor_Y == "AQUA"   ~ "Aqua",
                               sensor_Y == "S3A"    ~ "S3A",
                               sensor_Y == "S3B"    ~ "S3B",
@@ -255,15 +262,19 @@ df_matchups_global <- read_csv("output/global_stats_all.csv", show_col_types = F
 
 # Prep data for matrix plots
 df_matchups_global_pretty <- df_matchups_global |>
-  filter(wavelength >= 400, wavelength <= 600) |>
   mutate(sensor_sat = case_when(sensor_Y %in% c("Aqua")                   ~ "MODIS",
                                 sensor_Y %in% c("S3A", "S3B", "S3 all")   ~ "OLCI",
                                 sensor_Y %in% c("PACE")                    ~ "OCI",
                                 sensor_Y %in% c("SNPP", "JPSS1", "JPSS2") ~ "VIIRS"),
-         wavelength_clean = case_when(sensor_sat == "VIIRS" & wavelength %in% c(410, 411) ~ "410/411",
+         # VIIRS's three platforms report slightly offset nominal band centres (e.g. SNPP 410nm vs
+         # JPSS1/2 411nm) -- pair them onto one shared column per band, same 5 pairs W_nm_out()
+         # defines. PACE is bucketed into its broad colour-legend bands instead of one column per nm.
+         wavelength_clean = case_when(sensor_sat == "OCI" ~ pace_waveband_bucket(wavelength),
+                                      sensor_sat == "VIIRS" & wavelength %in% c(410, 411) ~ "410/411",
                                       sensor_sat == "VIIRS" & wavelength %in% c(443, 445) ~ "443/445",
                                       sensor_sat == "VIIRS" & wavelength %in% c(486, 489) ~ "486/489",
                                       sensor_sat == "VIIRS" & wavelength %in% c(551, 556) ~ "551/556",
+                                      sensor_sat == "VIIRS" & wavelength %in% c(667, 671) ~ "667/671",
                                       TRUE ~ as.character(wavelength))) |>
   mutate(sensor_Y   = factor(sensor_Y,   levels = c("Aqua", "S3 all", "S3B", "S3A",
                                                      "PACE", "JPSS2", "JPSS1", "SNPP")),
@@ -276,11 +287,28 @@ df_matchups_global_pretty <- df_matchups_global |>
 
 # Matrix plot
 plot_matrix_error <- function(df, val_range) {
+  # PACE's waveband buckets run all the way to 1050nm even though the current matchup data
+  # happens to top out around 718nm -- complete() adds a blank/NA row for any canonical bucket
+  # with zero underlying observations at any site, so it still gets its own (grey) column
+  # instead of silently disappearing
+  if(unique(df$sensor_sat) == "OCI"){
+    df <- df |>
+      tidyr::complete(wavelength_clean = names(colour_nm_func("PACE")),
+                       tidyr::nesting(sensor_Y, sensor_sat), site_name)
+  }
+
   df_all <- df |>
     group_by(sensor_Y, sensor_sat, site_name) |>
     summarise(Error = if(all(is.na(Error))) NA_real_ else mean(Error, na.rm = TRUE), .groups = "drop") |>
     mutate(wavelength_clean = "All")
   df <- bind_rows(df, df_all)
+
+  # Order wavebands left-to-right by their underlying wavelength (numeric prefix of the label,
+  # e.g. "667/671" -> 667, "351-400" -> 351), with the synthetic "All" column last
+  label_order <- unique(df$wavelength_clean[df$wavelength_clean != "All"])
+  label_order <- label_order[order(as.numeric(sub("[/-].*", "", label_order)))]
+  df <- df |> mutate(wavelength_clean = factor(wavelength_clean, levels = c(label_order, "All")))
+
   df_round <- df |>
     mutate(Error = case_when(Error > val_range[2] ~ val_range[2], TRUE ~ Error))
   ggplot(data = df_round, aes(x = wavelength_clean, y = sensor_Y)) +
@@ -316,8 +344,8 @@ plots_by_sensor <- purrr::set_names(
 
 fig_11 <- plots_by_sensor$MODIS / plots_by_sensor$VIIRS / plots_by_sensor$OLCI / plots_by_sensor$OCI +
   plot_annotation(tag_levels = "a", tag_suffix = ")") +
-  patchwork::plot_layout(guides = "collect", axis_titles = "collect", heights = c(0.35, 1, 1, 1))
-ggsave("figures/fig_11.png", fig_11, width = 20, height = 9)
+  patchwork::plot_layout(guides = "collect", axis_titles = "collect", heights = c(0.35, 1, 1, 0.35))
+ggsave("figures/fig_11.png", fig_11, width = 34, height = 9)
 
 
 # Fig S1 ------------------------------------------------------------------

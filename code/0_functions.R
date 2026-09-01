@@ -60,6 +60,18 @@ colour_nm_func <- function(sensor_Y){
   return(colour_nm)
 }
 
+# Bucket PACE/OCI's continuous wavelength (350-1150 nm) into the same broad bands used for its
+# colour legend above, since it has no small fixed set of nominal bands like the other sensors
+# (W_nm_out("PACE") intentionally stays a continuous 350:1150 range -- it's consumed elsewhere,
+# e.g. srf_band_map(), as a plain nominal-wavelength lookup, not a bucketed set). Shared by
+# plot_global_nm(), global_scatterplot_waveband(), and code/5_figures.R's Figure 11 matrix so the
+# binning stays consistent everywhere it's used.
+pace_waveband_bucket <- function(wavelength){
+  breaks <- c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050)
+  as.character(cut(wavelength, breaks = breaks, labels = names(colour_nm_func("PACE")),
+                    include.lowest = TRUE, right = TRUE))
+}
+
 
 # Function that assembles file directory based on desired variable and sensors
 file_path_build <- function(site_name, sat_name){
@@ -1940,11 +1952,8 @@ plot_global_nm <- function(df, sensor_Y){
 
   # Cut PACE colour bands to match colour labels
   if(sensor_Y == "PACE"){
-    df_prep <- df_prep |> 
-      mutate(wavelength = cut(wavelength,
-                              breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050),
-                              labels = names(colours_nm),
-                              include.lowest = TRUE, right = TRUE), .after = "wavelength")
+    df_prep <- df_prep |>
+      mutate(wavelength = pace_waveband_bucket(wavelength), .after = "wavelength")
   }
 
   # Determine rows for legend items
@@ -2031,13 +2040,10 @@ plot_global_nm <- function(df, sensor_Y){
   return(pl_clean)
 }
 
-# Takes variable and Y sensor as input to automagically create global scatterplot triptych
-# cut_legend = "cut" strips the legend so several panels can be stacked under one shared legend
-# sensor_Y = "S3B"; cut_legend = "cut"
-# sensor_Y = "AQUA"; cut_legend = "cut"
-# sensor_Y = "S3"; cut_legend = "no"
-# sensor_Y = "PACE"; cut_legend = "no"
-global_scatterplot <- function(sensor_Y, cut_legend = "no"){
+# Load QC-passed, outlier-screened, long-format HYPERNETS-vs-satellite matchups for one
+# sensor_Y platform. Shared by global_scatterplot() and global_scatterplot_waveband().
+# Returns columns: site_name, file_name, wavelength, Hyp, <sensor_Y column>
+load_global_matchup_data <- function(sensor_Y){
 
   # Continue with satellite versions if necessary
   if(sensor_Y  == "AQUA"){
@@ -2051,17 +2057,17 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
   } else {
     sensor_Z <- sensor_Y
   }
-  
+
   # Get filestub based on sensor_Z
   filestub <- paste0("_",sensor_Z,".csv")
-  
+
   # Load individual matchup results to filter file list and for further use
-  match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |> 
+  match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |>
     dplyr::select(site_name, file_name) |> distinct()
-  
+
   # Load outliers to screen them from being plotted
   outliers_all <- read_csv("meta/satellite_outliers.csv", show_col_types = FALSE) |> distinct()
-  
+
   # Load data based on in situ comparisons or not
   # NB: site list picked up automatically via available_sites() -- THFR is included
   # once its data folder exists on disk, no code change needed here.
@@ -2076,9 +2082,9 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
     site_list <- available_sites(sensor_Y)
     ply_folders <- expand.grid(site_name = site_list, sat_name = sensor_Y)
   }
-  
+
   # Load all folders
-  match_base <- purrr::pmap_dfr(ply_folders, load_matchups_folder, long = TRUE) |> 
+  match_base <- purrr::pmap_dfr(ply_folders, load_matchups_folder, long = TRUE) |>
     right_join(match_base_details, by = join_by(site_name, file_name))
 
   # Filter out outliers
@@ -2086,6 +2092,21 @@ global_scatterplot <- function(sensor_Y, cut_legend = "no"){
 
   # Remove any erroneuosly high values before plotting
   match_filter <- match_filter |> filter(Hyp <= 1)
+
+  match_filter
+}
+
+# Takes variable and Y sensor as input to automagically create global scatterplot triptych
+# cut_legend = "cut" strips the legend so several panels can be stacked under one shared legend
+# sensor_Y = "S3B"; cut_legend = "cut"
+# sensor_Y = "AQUA"; cut_legend = "cut"
+# sensor_Y = "S3"; cut_legend = "no"
+# sensor_Y = "PACE"; cut_legend = "no"
+global_scatterplot <- function(sensor_Y, cut_legend = "no"){
+
+  # Load QC-passed, outlier-screened, long-format matchups
+  print("Loading matchups")
+  match_filter <- load_global_matchup_data(sensor_Y)
 
   # Create the figure
   print("Creating figure, saving, and exiting")
@@ -2128,5 +2149,99 @@ global_scatterplot_stack <- function(sensor_Z){
   fig_stack <- ggpubr::ggarrange(plotlist = fig_list, ncol = 1, nrow = sensor_count, heights = panel_heights) +
     ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
   ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 16, height = 5 * sensor_count)
+}
+
+# Per-sensor-family scatterplot faceted by waveband instead of by site, with site shown as point
+# shape/colour instead of being faceted out -- complements global_scatterplot_stack() (which facets
+# by site and colours by waveband) by making a single systematically bad waveband immediately visible
+# as one misbehaving panel, rather than scattered across a wavelength-coloured legend.
+# sensor_Z = "VIIRS"
+global_scatterplot_waveband <- function(sensor_Z){
+
+  # Get the sensor_Y platforms that belong to this sensor family
+  sensor_Y_list <- unique(sensor_grid(sensor_Z)$sensor_Y)
+
+  # Load and combine matchups across all platforms in the family, aligning each platform's
+  # own wavelengths onto a common waveband_label so e.g. VIIRS's SNPP/JPSS1/JPSS2 bands
+  # (which differ slightly in nominal centre, e.g. 410 vs 411 nm) share one facet
+  match_all <- purrr::map_dfr(sensor_Y_list, function(sensor_Y){
+    match_filter <- load_global_matchup_data(sensor_Y) |>
+      filter(wavelength %in% W_nm_out(sensor_Y)) |>
+      rename(Sat = all_of(sensor_Y))
+
+    if(sensor_Z == "VIIRS"){
+      # Map each platform's band centres onto SNPP's as the canonical reference (same length/order)
+      band_map <- setNames(as.character(W_nm_out("SNPP")), as.character(W_nm_out(sensor_Y)))
+      match_filter <- match_filter |> mutate(waveband_label = unname(band_map[as.character(wavelength)]))
+    } else {
+      match_filter <- match_filter |> mutate(waveband_label = as.character(wavelength))
+    }
+    match_filter
+  })
+
+  # PACE/OCI is continuous (350-1150 nm) -- bucket into the same broad bands used for its
+  # colour legend elsewhere rather than one facet per nm
+  if(sensor_Z == "OCI"){
+    match_all <- match_all |> mutate(waveband_label = pace_waveband_bucket(wavelength))
+    waveband_levels <- names(colour_nm_func("PACE"))
+  } else {
+    waveband_levels <- as.character(sort(unique(as.numeric(match_all$waveband_label))))
+  }
+  match_all <- match_all |> mutate(waveband_label = factor(waveband_label, levels = waveband_levels))
+
+  # Per-(waveband, site) stats, combined into one newline-joined label per waveband so each
+  # facet panel gets a single compact text block instead of one box per site
+  site_levels <- c("MAFR", "THFR", "THFR_NE", "THFR_poly")
+  df_axis <- match_all |>
+    group_by(waveband_label) |>
+    summarise(max_axis = max(c(Hyp, Sat), na.rm = TRUE), .groups = "drop")
+
+  df_stats <- match_all |>
+    group_by(waveband_label, site_name) |>
+    group_modify(~ base_stats(.x$Hyp, .x$Sat)) |>
+    ungroup() |>
+    mutate(site_name = factor(site_name, levels = site_levels)) |>
+    arrange(waveband_label, site_name) |>
+    mutate(site_label = paste0(site_name, ": n=", n, ", S=", sprintf("%.2f", Slope_II),
+                               ", β=", sprintf("%.1f", Bias_50), "%, ε=", sprintf("%.1f", Error_50), "%")) |>
+    group_by(waveband_label) |>
+    summarise(label = paste(site_label, collapse = "\n"), .groups = "drop") |>
+    left_join(df_axis, by = "waveband_label")
+
+  # Per-facet 1:1 axis limits (same technique as plot_global_nm(), keyed by waveband instead of site)
+  axis_by_waveband <- setNames(df_stats$max_axis, as.character(df_stats$waveband_label))[waveband_levels]
+  pos_scales_x <- lapply(axis_by_waveband, function(a) scale_x_continuous(limits = c(0, a)))
+  pos_scales_y <- lapply(axis_by_waveband, function(a) scale_y_continuous(limits = c(0, a)))
+
+  var_labs <- pretty_label_func("RHOW")
+  match_all <- match_all |> mutate(site_name = factor(site_name, levels = site_levels))
+
+  fig <- ggplot(match_all, aes(x = Hyp, y = Sat)) +
+    geom_point(aes(shape = site_name, colour = site_name), size = 2, alpha = 0.7) +
+    geom_abline(slope = 1, intercept = 0, colour = "black") +
+    geom_text(data = df_stats, aes(label = label, y = max_axis), x = 0,
+              hjust = 0, vjust = 1, size = 2.5, inherit.aes = FALSE) +
+    facet_wrap(~waveband_label, scales = "free") +
+    scale_shape_manual(values = c(MAFR = 16, THFR = 17, THFR_NE = 15, THFR_poly = 3), drop = TRUE) +
+    scale_colour_brewer(palette = "Set1", drop = TRUE) +
+    ggh4x::facetted_pos_scales(x = pos_scales_x, y = pos_scales_y) +
+    labs(x = paste0("HYPERNETS; ", var_labs$units_lab),
+         y = paste0(sensor_Z, "; ", var_labs$units_lab),
+         shape = "Site", colour = "Site") +
+    theme_minimal() +
+    theme(panel.border = element_rect(fill = NA, colour = "black"),
+          aspect.ratio = 1,
+          legend.position = "bottom",
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 10),
+          axis.title.x = element_markdown(size = 12),
+          axis.title.y = element_markdown(size = 12),
+          axis.text = element_text(size = 9))
+
+  n_facets <- length(waveband_levels)
+  n_col <- ceiling(sqrt(n_facets))
+  n_row <- ceiling(n_facets / n_col)
+  ggsave(paste0("figures/global_scatter_waveband_RHOW_",sensor_Z,".png"), fig,
+         width = 4 * n_col, height = 4 * n_row + 1)
 }
 
