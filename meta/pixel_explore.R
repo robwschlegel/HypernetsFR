@@ -895,3 +895,75 @@ p_effect_hyp <- effect_size_hyp |>
   theme_bw()
 ggsave(file.path(out_dir, "oyster_bed_effect_size_hyp.png"), p_effect_hyp, width = 12, height = 8)
 
+
+# Daily in-bed vs. out-of-bed deviation explorer ------------------------------
+# The effect-size figures above pool every matchup together per sensor/
+# wavelength, so a big pooled effect (e.g. S3B's ~400-450 nm bands) could be
+# driven evenly by every day or by a handful of outlier days. This collapses
+# the per-pixel CSVs already written by the full-sensor loop above
+# (pixel_deviation_all_<sY>.csv) to one row per (sensor_Y, match_date,
+# wavelength, in_oyster_bed), so individual days can be ranked and then
+# inspected on the map by hand -- same EDIT ME convention as the "Manual
+# per-day test" section above.
+
+daily_effect_hyp <- map_dfr(sensor_Y_thfr, function(sY){
+  f <- file.path(out_dir, paste0("pixel_deviation_all_", sY, ".csv"))
+  if(!file.exists(f)) return(tibble())
+  read_csv(f, show_col_types = FALSE) |>
+    summarise(mean_abs_deviation_hyp = mean(abs_deviation_hyp, na.rm = TRUE),
+              .by = c(sensor_Y, match_date, wavelength, in_oyster_bed))
+}) |>
+  pivot_wider(names_from = in_oyster_bed, values_from = mean_abs_deviation_hyp, names_prefix = "in_bed_") |>
+  mutate(effect_size = in_bed_TRUE - in_bed_FALSE)
+write_csv(daily_effect_hyp, file.path(out_dir, "oyster_bed_effect_size_daily.csv"))
+
+# Rank days for one sensor/waveband range to find which days drive a given
+# panel of oyster_bed_effect_size_hyp.png (e.g. S3B, 400-450 nm)
+sensor_Y_daily <- "S3B"                 # EDIT ME
+wavelength_range_daily <- c(400, 450)   # EDIT ME
+
+day_effect_ranked <- daily_effect_hyp |>
+  dplyr::filter(sensor_Y == sensor_Y_daily,
+                wavelength >= wavelength_range_daily[1], wavelength <= wavelength_range_daily[2]) |>
+  arrange(desc(abs(effect_size)))
+print(day_effect_ranked, n = 30)
+
+# Pick one day off the ranked table above and inspect its raw pixel map --
+# same map as the full-sensor loop's per-day maps, just re-reading the
+# already-written per-sensor CSV rather than re-querying the db.
+match_date_daily <- NA  # EDIT ME (e.g. as.Date("2025-01-17")) or NA for the top-ranked day above
+
+if(is.na(match_date_daily)) match_date_daily <- day_effect_ranked$match_date[1]
+
+day_deviation_daily <- read_csv(file.path(out_dir, paste0("pixel_deviation_all_", sensor_Y_daily, ".csv")), show_col_types = FALSE) |>
+  dplyr::filter(match_date == match_date_daily)
+stopifnot("No pixel rows for this sensor_Y_daily/match_date_daily combination -- pick a date from the ranked table above" =
+            nrow(day_deviation_daily) > 0)
+
+day_deviation_daily_facet <- day_deviation_daily |>
+  mutate(wavelength_facet = if(sensor_Y_daily == "PACE"){
+    as.character(cut(wavelength, breaks = pace_nm_breaks, labels = pace_nm_labels, include.lowest = TRUE))
+  } else {
+    as.character(wavelength)
+  })
+
+pad_daily <- 0.005
+map_bbox_daily <- st_bbox(c(xmin = min(day_deviation_daily_facet$pixel_lon) - pad_daily,
+                             xmax = max(day_deviation_daily_facet$pixel_lon) + pad_daily,
+                             ymin = min(day_deviation_daily_facet$pixel_lat) - pad_daily,
+                             ymax = max(day_deviation_daily_facet$pixel_lat) + pad_daily),
+                           crs = 4326) |> st_as_sfc() |> st_sf()
+daily_tile <- get_tiles_retry(map_bbox_daily, provider = ign_ortho, crop = TRUE, zoom = 17)
+
+p_daily_map <- ggplot() +
+  geom_spatraster_rgb(data = daily_tile) +
+  geom_sf(data = oyster_bed_sf, fill = "cyan", alpha = 0.15, colour = "orange", linewidth = 1) +
+  geom_point(data = day_deviation_daily_facet, aes(x = pixel_lon, y = pixel_lat, colour = deviation_hyp), size = 2.5) +
+  scale_colour_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "Hyp - Sat") +
+  facet_wrap(~wavelength_facet) +
+  coord_sf(crs = st_crs(daily_tile), expand = FALSE) +
+  labs(title = paste0(sensor_Y_daily, ": pixel deviation from HYPERNETS, ", match_date_daily),
+       x = NULL, y = NULL) +
+  theme_bw()
+ggsave(file.path(out_dir, paste0("daily_effect_map_", sensor_Y_daily, "_", match_date_daily, ".png")), p_daily_map, width = 12, height = 10)
+
