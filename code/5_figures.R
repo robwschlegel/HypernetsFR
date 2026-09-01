@@ -26,6 +26,13 @@ global_scatterplot_stack("VIIRS")
 global_scatterplot_stack("OLCI")
 global_scatterplot_stack("OCI")
 
+# Per-waveband scatterplots (site as point shape/colour) -- exposes bad individual wavebands
+# (e.g. blue bands) that are hard to spot in the per-site stacks above
+global_scatterplot_waveband("MODIS")
+global_scatterplot_waveband("VIIRS")
+global_scatterplot_waveband("OLCI")
+global_scatterplot_waveband("OCI")
+
 # Stop here if running from terminal
 if (!interactive()) quit(save = "no", status = 0)
 
@@ -260,13 +267,18 @@ df_matchups_global_pretty <- df_matchups_global |>
                                       TRUE ~ as.character(wavelength))) |>
   mutate(sensor_Y   = factor(sensor_Y,   levels = c("Aqua", "S3 all", "S3B", "S3A",
                                                      "PACE", "JPSS2", "JPSS1", "SNPP")),
-         sensor_sat = factor(sensor_sat, levels = c("MODIS", "OLCI", "OCI", "VIIRS")))
+         sensor_sat = factor(sensor_sat, levels = c("MODIS", "OLCI", "OCI", "VIIRS")),
+         # NB: site_name is kept (not filtered/dropped) so the matrix below can facet by it --
+         # previously it was silently ignored here, meaning MAFR/THFR/THFR_NE/THFR_poly rows for
+         # the same sensor/waveband (which have very different Error_50, e.g. up to 1600% at THFR
+         # vs ~140% at MAFR) were averaged/overplotted together. See manuscript/track-changes.md.
+         site_name = factor(site_name, levels = c("MAFR", "THFR", "THFR_NE", "THFR_poly")))
 
 # Matrix plot
 plot_matrix_error <- function(df, val_range) {
   df_all <- df |>
-    group_by(sensor_Y, sensor_sat) |>
-    summarise(Error = mean(Error, na.rm = TRUE), .groups = "drop") |>
+    group_by(sensor_Y, sensor_sat, site_name) |>
+    summarise(Error = if(all(is.na(Error))) NA_real_ else mean(Error, na.rm = TRUE), .groups = "drop") |>
     mutate(wavelength_clean = "All")
   df <- bind_rows(df, df_all)
   df_round <- df |>
@@ -275,8 +287,8 @@ plot_matrix_error <- function(df, val_range) {
     geom_tile(aes(fill = Error), colour = "black") +
     geom_label(data = df, aes(label = sprintf("%.1f", round(Error, 1))), size = 3) +
     labs(x = "Waveband (nm)", y = NULL, fill = "Error (%)") +
-    facet_grid(sensor_sat~., scales = "free") +
-    scale_fill_viridis_c(limits = val_range, breaks = c(10, 20, 30), labels = c("10", "20", "30")) +
+    facet_grid(sensor_sat~site_name, scales = "free") +
+    scale_fill_viridis_c(limits = val_range, breaks = c(50, 100, 150), labels = c("50", "100", "150")) +
     coord_cartesian(expand = FALSE) +
     theme(panel.border = element_rect(fill = NA, color = "black"),
           legend.title = element_text(size = 14),
@@ -287,10 +299,15 @@ plot_matrix_error <- function(df, val_range) {
 }
 
 # Build one panel per sensor family and stack
+# NB: val_range is fixed and shared across all four sensor-family panels (not computed per
+# family/site) because plot_layout(guides = "collect") below requires one common fill scale to
+# merge the legends correctly. Raised from the previous c(0, 40): MAFR's real Error_50 range
+# (~7-140%) is now well resolved, while THFR/THFR_NE/THFR_poly's much heavier tail (up to ~1600%)
+# still clips at the cap colour -- intended, so a few extreme outliers don't wash out the scale.
 sensors <- c("MODIS", "VIIRS", "OLCI", "OCI")
 plots_by_sensor <- purrr::set_names(
   purrr::map(sensors, function(s) {
-    val_range <- c(0, 40)
+    val_range <- c(0, 150)
     df_sub <- df_matchups_global_pretty |> dplyr::filter(sensor_sat == s)
     plot_matrix_error(df_sub, val_range)
   }),
@@ -300,7 +317,7 @@ plots_by_sensor <- purrr::set_names(
 fig_11 <- plots_by_sensor$MODIS / plots_by_sensor$VIIRS / plots_by_sensor$OLCI / plots_by_sensor$OCI +
   plot_annotation(tag_levels = "a", tag_suffix = ")") +
   patchwork::plot_layout(guides = "collect", axis_titles = "collect", heights = c(0.35, 1, 1, 1))
-ggsave("figures/fig_11.png", fig_11, width = 12, height = 9)
+ggsave("figures/fig_11.png", fig_11, width = 20, height = 9)
 
 
 # Fig S1 ------------------------------------------------------------------
