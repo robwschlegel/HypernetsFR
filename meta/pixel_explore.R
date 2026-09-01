@@ -98,6 +98,24 @@ pace_nm_labels <- c("351-400", "401-450", "451-500", "501-550", "551-600",
 # just try every db_satellite_names entry rather than pre-filtering)
 sensor_Y_thfr <- db_satellite_names
 
+# db_matchup_pixels() deliberately returns every candidate pairing in the db's
+# raw matchups table and leaves time/distance QC to the caller (see its own
+# docstring in code/0_functions.R) -- db_export_matchups_site() (the THFR_NE/
+# THFR_poly production pipeline) applies that QC itself before writing any
+# file, but this exploratory script called db_matchup_pixels() directly
+# everywhere, so none of its analyses actually respected THFR's 30-minute
+# site_diff_time_limit() window. This wrapper applies the exact same gate
+# db_export_matchups_site() uses -- diff_time_min <= site_diff_time_limit
+# ("THFR") plus the matching dist_km_matchup <= 10 ceiling -- once, here, so
+# every downstream analysis in this script inherits it automatically. Every
+# db_matchup_pixels() call below goes through this wrapper instead.
+db_matchup_pixels_qc <- function(db_path, sensor_Y){
+  sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
+  db_matchup_pixels(db_path, sensor_Y) |>
+    mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
+    filter(diff_time_min <= site_diff_time_limit("THFR"), dist_km_matchup <= 10)
+}
+
 
 # Bearing/quadrant helpers ---------------------------------------------------
 
@@ -129,7 +147,7 @@ pixel_bearing_quadrant <- function(df){
 station_csv <- read_csv("meta/station_in_situ.csv", show_col_types = FALSE) |>
   dplyr::filter(site == "THFR")
 
-hyp_positions <- db_matchup_pixels(db_path, "S3A") |>
+hyp_positions <- db_matchup_pixels_qc(db_path, "S3A") |>
   dplyr::select(match_date, lon_Hyp, lat_Hyp) |>
   distinct()
 
@@ -188,7 +206,7 @@ ggsave(file.path(out_dir, "thau_station_position_map.png"), p_station_map, width
 
 for(sY in sensor_Y_thfr){
   pixel_positions_all <- tryCatch({
-    db_matchup_pixels(db_path, sY) |>
+    db_matchup_pixels_qc(db_path, sY) |>
       distinct(matchup_id, pixel_pos, pixel_lon, pixel_lat, lon_Hyp, lat_Hyp)
   }, warning = function(w){ message(conditionMessage(w)); tibble() })
   if(nrow(pixel_positions_all) == 0) next
@@ -233,7 +251,7 @@ for(sY in sensor_Y_thfr){
 
 # Load all data for one sensor
 sensor_Y_pick <- "S3A"                 # EDIT ME
-df_pick_all <- db_matchup_pixels(db_path, sensor_Y_pick) |> pixel_bearing_quadrant()
+df_pick_all <- db_matchup_pixels_qc(db_path, sensor_Y_pick) |> pixel_bearing_quadrant()
 
 # Pick one date for testing
 unique(df_pick_all$match_date)
@@ -548,7 +566,7 @@ pixel_in_oyster_bed <- function(lon, lat){
   lengths(st_intersects(pts, oyster_bed_union)) > 0
 }
 
-s3a_pixels <- db_matchup_pixels(db_path, "S3A") |>
+s3a_pixels <- db_matchup_pixels_qc(db_path, "S3A") |>
   distinct(matchup_id, pixel_pos, pixel_lon, pixel_lat) |>
   mutate(in_oyster_bed = pixel_in_oyster_bed(pixel_lon, pixel_lat))
 
@@ -636,9 +654,9 @@ pixel_deviation_pipeline <- function(df_all_pixels, sensor_col){
            abs_deviation = abs(deviation),
            deviation_hyp = Hyp - .data[[sensor_col]],
            abs_deviation_hyp = abs(deviation_hyp)) |>
-    arrange(matchup_id, wavelength, desc(abs_deviation)) |>
+    arrange(matchup_id, wavelength, abs_deviation) |>
     mutate(rank = row_number(), .by = c(matchup_id, wavelength)) |>
-    arrange(matchup_id, wavelength, desc(abs_deviation_hyp)) |>
+    arrange(matchup_id, wavelength, abs_deviation_hyp) |>
     mutate(rank_hyp = row_number(), .by = c(matchup_id, wavelength))
 }
 
@@ -647,13 +665,19 @@ pixel_deviation_pipeline <- function(df_all_pixels, sensor_col){
 # Pick one sensor + date, see the full ranked pixel table for every wavelength.
 
 # Select and filter by one sensor
-sensor_Y_dev <- "S3A"  # EDIT ME
-df_dev_all <- db_matchup_pixels(db_path, sensor_Y_dev)
+sensor_Y_dev <- "AQUA"  # EDIT ME
+df_dev_all <- db_matchup_pixels_qc(db_path, sensor_Y_dev)
 
 # Get data for the chosen date
 date_dev <- NA          # EDIT ME (e.g. as.Date("2025-11-30")) or NA for the first available day
 matchup_id_dev <- if(is.na(date_dev)){
-  df_dev_all$matchup_id[1]
+  # Plain first-row selection can land on a matchup with pixels only in the
+  # 5x5_only outer ring (e.g. this happens for AQUA once the time/distance QC
+  # gate above changes which matchup sorts first), which pixel_deviation_
+  # pipeline() then reduces to zero 3x3 rows -- restrict the fallback pick to
+  # matchups that actually have inner-3x3 pixel_pos rows (same "!grepl('2', ...)"
+  # test as pixel_filter_ne_inner3x3() in code/0_functions.R).
+  df_dev_all |> dplyr::filter(!grepl("2", pixel_pos)) |> pull(matchup_id) |> head(1)
 } else {
   df_dev_all |> dplyr::filter(match_date == date_dev) |> pull(matchup_id) |> head(1)
 }
@@ -687,14 +711,30 @@ map_bbox_day <- st_bbox(c(xmin = min(day_deviation_facet$pixel_lon) - pad_day,
                          crs = 4326) |> st_as_sfc() |> st_sf()
 day_tile <- get_tiles_retry(map_bbox_day, provider = ign_ortho, crop = TRUE, zoom = 17)
 
+# grid_cv_pct is constant within a wavelength for non-PACE sensors, but PACE's
+# wavelength_facet bins several raw wavelengths together, each with its own
+# grid_cv_pct, so the per-facet label averages across the bin.
+# label_lon/label_lat use explicit coordinates (not Inf) since coord_sf
+# transforms layer coordinates through the tile's CRS, and an infinite
+# coordinate transforms to NaN and silently drops. Placing it just inside
+# the fixed map_bbox_day extent (shared by every facet) instead.
+bbox_day_num <- st_bbox(map_bbox_day)
+cv_label_day <- day_deviation_facet |>
+  summarise(cv_label = paste0("CV: ", round(mean(grid_cv_pct, na.rm = TRUE), 1), "%"),
+            .by = wavelength_facet) |>
+  mutate(label_lon = 3.62,
+         label_lat = 43.444)
+
 p_day_map <- ggplot() +
   geom_spatraster_rgb(data = day_tile) +
   geom_sf(data = oyster_bed_sf, fill = "cyan", alpha = 0.15, colour = "orange", linewidth = 1) +
   geom_point(data = day_deviation_facet, aes(x = pixel_lon, y = pixel_lat, colour = deviation_hyp), size = 2.5) +
+  geom_text(data = cv_label_day, aes(x = label_lon, y = label_lat, label = cv_label),
+            inherit.aes = FALSE, hjust = 0, vjust = 1, size = 3) +
   scale_colour_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "Hyp - Sat") +
   facet_wrap(~wavelength_facet) +
   coord_sf(crs = st_crs(day_tile), expand = FALSE) +
-  labs(title = paste0(sensor_Y_dev, " -- pixel deviation from HYPERNETS, ", day_deviation_facet$match_date[1]),
+  labs(title = paste0(sensor_Y_dev, ": pixel deviation from HYPERNETS, ", day_deviation_facet$match_date[1]),
        x = NULL, y = NULL) +
   theme_bw()
 ggsave(file.path(out_dir, paste0("daily_check_map_", sensor_Y_dev, ".png")), p_day_map, width = 12, height = 10)
@@ -707,8 +747,7 @@ ggsave(file.path(out_dir, paste0("daily_check_map_", sensor_Y_dev, ".png")), p_d
 # out-of-bed pattern can be compared side by side.
 
 # PACE is hyperspectral: the underlying grid mean/sd/deviation is still
-# computed per exact native wavelength (correct -- binning first would blend
-# RHOW across a ~50 nm band into one number), but its comparison figures
+# computed per exact native wavelength, but its comparison figures
 # facet on pace_nm_breaks/pace_nm_labels bins instead of ~800 individual
 # panels, same convention as the pixel_pos boxplots in the Figures section.
 
@@ -720,7 +759,7 @@ oyster_bed_test_all_hyp <- tibble()
 for(sY in sensor_Y_thfr){
   t0 <- Sys.time()
   sensor_deviation <- tryCatch({
-    db_matchup_pixels(db_path, sY) |> pixel_deviation_pipeline(sY)
+    db_matchup_pixels_qc(db_path, sY) |> pixel_deviation_pipeline(sY)
   }, warning = function(w){ message(conditionMessage(w)); tibble() })
   if(nrow(sensor_deviation) == 0) next
   message(sY, " deviation pipeline: ", round(difftime(Sys.time(), t0, units = "secs"), 1), " sec, ",
@@ -735,28 +774,19 @@ for(sY in sensor_Y_thfr){
     })
 
   p_dev <- sensor_deviation |>
-    ggplot(aes(x = in_oyster_bed, y = abs_deviation, fill = in_oyster_bed)) +
+    ggplot(aes(x = in_oyster_bed, y = deviation, fill = in_oyster_bed)) +
     geom_boxplot(outlier.size = 0.5) +
     facet_wrap(~wavelength_facet, scales = "free_y") +
-    labs(title = paste0(sY, " -- pixel deviation from 3x3 grid mean, in vs. out of oyster bed"),
-         x = "In oyster bed", y = "|Sat pixel RHOW - grid mean|", fill = "In oyster bed") +
+    labs(title = paste0(sY, ": pixel deviation from 3x3 grid mean, in vs. out of oyster bed"),
+         x = "In oyster bed", y = "Sat pixel RHOW - grid mean", fill = "In oyster bed") +
     theme_bw()
   ggsave(file.path(out_dir, paste0("deviation_vs_oyster_bed_", sY, ".png")), p_dev, width = 10, height = 8)
 
-  p_rank <- sensor_deviation |>
-    ggplot(aes(x = in_oyster_bed, y = rank, fill = in_oyster_bed)) +
-    geom_boxplot(outlier.size = 0.5) +
-    facet_wrap(~wavelength_facet) +
-    labs(title = paste0(sY, " -- deviation rank (1 = biggest outlier), in vs. out of oyster bed"),
-         x = "In oyster bed", y = "Rank within 3x3 grid (1 = furthest from mean)", fill = "In oyster bed") +
-    theme_bw()
-  ggsave(file.path(out_dir, paste0("deviation_rank_vs_oyster_bed_", sY, ".png")), p_rank, width = 10, height = 8)
-
   # Quantitative summary: mean |deviation| and mean rank in vs. out of the
-  # oyster bed, per wavelength, plus a Wilcoxon rank-sum test (unpaired -- in-
+  # oyster bed, per wavelength, plus a Wilcoxon rank-sum test (unpaired: in-
   # and out-of-bed pixels aren't a 1:1 pairing) for whether the in/out
   # difference is significant. Guarded against wavelengths where every pixel
-  # falls on only one side of the mask (can't run a two-sample test then).
+  # falls on only one side of the mask.
   sensor_summary <- sensor_deviation |>
     summarise(n = n(), mean_abs_deviation = mean(abs_deviation, na.rm = TRUE),
               mean_rank = round(mean(rank, na.rm = TRUE), 2), .by = c(wavelength, in_oyster_bed)) |>
@@ -773,31 +803,19 @@ for(sY in sensor_Y_thfr){
         tibble(p_value = NA_real_)
       }
     }, .by = wavelength) |>
-    mutate(sensor_Y = sY, .before = 1)
+    mutate(sensor_Y = sY, .before = 1) |> 
+    mutate(p_value = round(p_value, 6))
   oyster_bed_test_all <- bind_rows(oyster_bed_test_all, sensor_test)
 
-  # In-situ-minus-satellite version of the test above -- same structure, but
-  # using abs_deviation_hyp/rank_hyp (how far each pixel sits from the paired
-  # HYPERNETS value) instead of abs_deviation/rank (how far each pixel sits
-  # from its own grid's mean). This is the more direct test of the manuscript
-  # question -- actual matchup quality, not just internal grid consistency.
+  # In-situ-minus-satellite version of the test above, but using deviation_hyp
   p_dev_hyp <- sensor_deviation |>
-    ggplot(aes(x = in_oyster_bed, y = abs_deviation_hyp, fill = in_oyster_bed)) +
+    ggplot(aes(x = in_oyster_bed, y = deviation_hyp, fill = in_oyster_bed)) +
     geom_boxplot(outlier.size = 0.5) +
     facet_wrap(~wavelength_facet, scales = "free_y") +
-    labs(title = paste0(sY, " -- pixel deviation from HYPERNETS (3x3 grid), in vs. out of oyster bed"),
-         x = "In oyster bed", y = "|Hyp RHOW - sat pixel RHOW|", fill = "In oyster bed") +
+    labs(title = paste0(sY, ": pixel deviation from HYPERNETS (3x3 grid), in vs. out of oyster bed"),
+         x = "In oyster bed", y = "Hyp RHOW - sat pixel RHOW", fill = "In oyster bed") +
     theme_bw()
   ggsave(file.path(out_dir, paste0("deviation_vs_oyster_bed_hyp_", sY, ".png")), p_dev_hyp, width = 10, height = 8)
-
-  p_rank_hyp <- sensor_deviation |>
-    ggplot(aes(x = in_oyster_bed, y = rank_hyp, fill = in_oyster_bed)) +
-    geom_boxplot(outlier.size = 0.5) +
-    facet_wrap(~wavelength_facet) +
-    labs(title = paste0(sY, " -- deviation-from-HYPERNETS rank (1 = worst, 3x3 grid), in vs. out of oyster bed"),
-         x = "In oyster bed", y = "Rank within 3x3 grid (1 = furthest from Hyp)", fill = "In oyster bed") +
-    theme_bw()
-  ggsave(file.path(out_dir, paste0("deviation_rank_vs_oyster_bed_hyp_", sY, ".png")), p_rank_hyp, width = 10, height = 8)
 
   sensor_summary_hyp <- sensor_deviation |>
     summarise(n = n(), mean_abs_deviation_hyp = mean(abs_deviation_hyp, na.rm = TRUE),
@@ -815,7 +833,8 @@ for(sY in sensor_Y_thfr){
         tibble(p_value = NA_real_)
       }
     }, .by = wavelength) |>
-    mutate(sensor_Y = sY, .before = 1)
+    mutate(sensor_Y = sY, .before = 1) |> 
+    mutate(p_value = round(p_value, 6))
   oyster_bed_test_all_hyp <- bind_rows(oyster_bed_test_all_hyp, sensor_test_hyp)
 }
 
@@ -823,8 +842,56 @@ write_csv(oyster_bed_summary_all, file.path(out_dir, "oyster_bed_summary_all_sen
 write_csv(oyster_bed_test_all, file.path(out_dir, "oyster_bed_test_all_sensors.csv"))
 write_csv(oyster_bed_summary_all_hyp, file.path(out_dir, "oyster_bed_summary_all_sensors_hyp.csv"))
 write_csv(oyster_bed_test_all_hyp, file.path(out_dir, "oyster_bed_test_all_sensors_hyp.csv"))
-print(oyster_bed_summary_all, n = 100)
-print(oyster_bed_test_all, n = 100)
-print(oyster_bed_summary_all_hyp, n = 100)
-print(oyster_bed_test_all_hyp, n = 100)
+# print(oyster_bed_summary_all, n = 100)
+# print(oyster_bed_test_all, n = 100)
+# print(oyster_bed_summary_all_hyp, n = 100)
+# print(oyster_bed_test_all_hyp, n = 100)
+
+
+# Cross-sensor summary: in-bed vs. out-of-bed effect size, per wavelength ----
+# One dot per (sensor_Y, wavelength): mean |deviation| for oyster-bed pixels
+# minus mean |deviation| for non-oyster-bed pixels (positive = oyster-bed
+# pixels are the more deviant group), coloured by whether the paired Wilcoxon
+# test above cleared p < 0.05, so effect size and significance read together.
+# Faceted by sensor with free x scales since each sensor has its own waveband
+# set. Two versions, since they answer different questions: grid-mean
+# deviation (spatial consistency within the pixel box) and HYPERNETS deviation
+# (accuracy against the in-situ reference).
+effect_size_grid <- oyster_bed_summary_all |>
+  dplyr::select(sensor_Y, wavelength, in_oyster_bed, mean_abs_deviation) |>
+  pivot_wider(names_from = in_oyster_bed, values_from = mean_abs_deviation, names_prefix = "in_bed_") |>
+  mutate(effect_size = in_bed_TRUE - in_bed_FALSE) |>
+  left_join(oyster_bed_test_all, by = c("sensor_Y", "wavelength")) |>
+  mutate(significant = !is.na(p_value) & p_value < 0.05)
+
+p_effect_grid <- effect_size_grid |>
+  ggplot(aes(x = wavelength, y = effect_size, colour = significant)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_point(size = 2.5) +
+  facet_wrap(~sensor_Y, scales = "free_x") +
+  scale_colour_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey60"), name = "p < 0.05\n(Wilcoxon)") +
+  labs(title = "In-bed vs. out-of-bed pixel deviation from 3x3 grid mean, all sensors",
+       subtitle = "Negative values show that the variance is greater outside of the oyster bed. Red dots show that the difference in variance is signigicant.",
+       x = "Wavelength (nm)", y = "Mean |deviation| (in bed) − mean |deviation| (out of bed)") +
+  theme_bw()
+ggsave(file.path(out_dir, "oyster_bed_effect_size_grid.png"), p_effect_grid, width = 12, height = 8)
+
+effect_size_hyp <- oyster_bed_summary_all_hyp |>
+  dplyr::select(sensor_Y, wavelength, in_oyster_bed, mean_abs_deviation_hyp) |>
+  pivot_wider(names_from = in_oyster_bed, values_from = mean_abs_deviation_hyp, names_prefix = "in_bed_") |>
+  mutate(effect_size = in_bed_TRUE - in_bed_FALSE) |>
+  left_join(oyster_bed_test_all_hyp, by = c("sensor_Y", "wavelength")) |>
+  mutate(significant = !is.na(p_value) & p_value < 0.05)
+
+p_effect_hyp <- effect_size_hyp |>
+  ggplot(aes(x = wavelength, y = effect_size, colour = significant)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_point(size = 2.5) +
+  facet_wrap(~sensor_Y, scales = "free_x") +
+  scale_colour_manual(values = c(`TRUE` = "firebrick", `FALSE` = "grey60"), name = "p < 0.05\n(Wilcoxon,\nsigned)") +
+  labs(title = "In-bed vs. out-of-bed pixel deviation from HYPERNETS, all sensors",
+       subtitle = "Negative values show that the difference is greater outside of the oyster bed. Red dots show that the difference in variance is signigicant.",
+       x = "Wavelength (nm)", y = "Mean |Hyp - Sat| (in bed) − mean |Hyp - Sat| (out of bed)") +
+  theme_bw()
+ggsave(file.path(out_dir, "oyster_bed_effect_size_hyp.png"), p_effect_hyp, width = 12, height = 8)
 
