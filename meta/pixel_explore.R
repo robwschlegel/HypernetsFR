@@ -967,3 +967,163 @@ p_daily_map <- ggplot() +
   theme_bw()
 ggsave(file.path(out_dir, paste0("daily_effect_map_", sensor_Y_daily, "_", match_date_daily, ".png")), p_daily_map, width = 12, height = 10)
 
+
+# Seasonal check: daily between-pixel vs. daily Hyp-satellite differences ----
+# Two different "difference" signals, pooled across wavelength and the 3x3
+# grid to one summary value per (sensor_Y, match_date), reusing the same
+# per-sensor CSVs as the sections above:
+#   - abs_deviation      -- how much satellite pixels differ from EACH OTHER
+#                            within the matchup box (grid spread/heterogeneity)
+#   - abs_deviation_hyp  -- how much the satellite differs from HYPERNETS
+# Time series + monthly boxplots of both, to check whether either grows
+# larger at particular times of year rather than being flat across the year.
+
+daily_diff_summary <- map_dfr(sensor_Y_thfr, function(sY){
+  f <- file.path(out_dir, paste0("pixel_deviation_all_", sY, ".csv"))
+  if(!file.exists(f)) return(tibble())
+  read_csv(f, show_col_types = FALSE) |>
+    summarise(mean_abs_deviation = mean(abs_deviation, na.rm = TRUE),
+              mean_abs_deviation_hyp = mean(abs_deviation_hyp, na.rm = TRUE),
+              .by = c(sensor_Y, match_date))
+}) |>
+  mutate(month = month(match_date, label = TRUE, abbr = TRUE))
+write_csv(daily_diff_summary, file.path(out_dir, "daily_diff_summary.csv"))
+
+metric_labels <- c(mean_abs_deviation = "Sat pixel - 3x3 grid mean",
+                    mean_abs_deviation_hyp = "Hyp - Sat")
+
+daily_diff_long <- daily_diff_summary |>
+  pivot_longer(cols = c(mean_abs_deviation, mean_abs_deviation_hyp), names_to = "metric", values_to = "value")
+
+# Time series, one panel per sensor, both metrics overlaid
+p_diff_ts <- daily_diff_long |>
+  ggplot(aes(x = match_date, y = value, colour = metric)) +
+  geom_line(alpha = 0.4) +
+  geom_point(size = 1) +
+  facet_wrap(~sensor_Y, scales = "free_y", ncol = 2) +
+  scale_colour_discrete(labels = metric_labels) +
+  labs(title = "THFR -- daily mean |difference|, by sensor",
+       x = NULL, y = "Mean |difference| (RHOW)", colour = NULL) +
+  theme_bw()
+ggsave(file.path(out_dir, "daily_diff_timeseries.png"), p_diff_ts, width = 12, height = 10)
+
+# Monthly boxplots, same two metrics, to spot seasonal patterns directly
+p_diff_month <- daily_diff_long |>
+  ggplot(aes(x = month, y = value, fill = metric)) +
+  geom_boxplot(outlier.size = 0.5) +
+  facet_wrap(~sensor_Y, scales = "free_y", ncol = 2) +
+  scale_fill_discrete(labels = metric_labels) +
+  labs(title = "THFR -- monthly distribution of daily mean |difference|, by sensor",
+       x = "Month", y = "Mean |difference| (RHOW)", fill = NULL) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave(file.path(out_dir, "daily_diff_boxplot_month.png"), p_diff_month, width = 12, height = 10)
+
+
+# Outlier-day maps, per sensor -------------------------------------------------
+# The time series/boxplots above are dominated by a handful of extreme days
+# per sensor (e.g. JPSS2's ~May spike near 0.3, S3A's June/July spikes near
+# 0.12-0.13). This finds each sensor's worst N days by mean_abs_deviation_hyp
+# (daily_diff_summary, above) and maps every one of them -- same per-pixel,
+# per-wavelength map as the single-day picker section further up, just looped
+# across every sensor's worst days instead of one hand-picked day at a time.
+
+n_outlier_days <- 3  # EDIT ME -- number of worst days to map, per sensor
+
+outlier_days <- daily_diff_summary |>
+  arrange(sensor_Y, desc(mean_abs_deviation_hyp)) |>
+  slice_head(n = n_outlier_days, by = sensor_Y) |>
+  mutate(rank = row_number(), .by = sensor_Y)
+write_csv(outlier_days, file.path(out_dir, "outlier_days_per_sensor.csv"))
+print(outlier_days, n = Inf)
+
+for(i in seq_len(nrow(outlier_days))){
+  sY <- outlier_days$sensor_Y[i]
+  d_i <- outlier_days$match_date[i]
+  rank_i <- outlier_days$rank[i]
+
+  day_i <- read_csv(file.path(out_dir, paste0("pixel_deviation_all_", sY, ".csv")), show_col_types = FALSE) |>
+    dplyr::filter(match_date == d_i)
+  if(nrow(day_i) == 0) next
+
+  day_i_facet <- day_i |>
+    mutate(wavelength_facet = if(sY == "PACE"){
+      as.character(cut(wavelength, breaks = pace_nm_breaks, labels = pace_nm_labels, include.lowest = TRUE))
+    } else {
+      as.character(wavelength)
+    })
+
+  pad_i <- 0.005
+  map_bbox_i <- st_bbox(c(xmin = min(day_i_facet$pixel_lon) - pad_i,
+                           xmax = max(day_i_facet$pixel_lon) + pad_i,
+                           ymin = min(day_i_facet$pixel_lat) - pad_i,
+                           ymax = max(day_i_facet$pixel_lat) + pad_i),
+                         crs = 4326) |> st_as_sfc() |> st_sf()
+  tile_i <- get_tiles_retry(map_bbox_i, provider = ign_ortho, crop = TRUE, zoom = 17)
+
+  p_i <- ggplot() +
+    geom_spatraster_rgb(data = tile_i) +
+    geom_sf(data = oyster_bed_sf, fill = "cyan", alpha = 0.15, colour = "orange", linewidth = 1) +
+    geom_point(data = day_i_facet, aes(x = pixel_lon, y = pixel_lat, colour = deviation_hyp), size = 2.5) +
+    scale_colour_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "Hyp - Sat") +
+    facet_wrap(~wavelength_facet) +
+    coord_sf(crs = st_crs(tile_i), expand = FALSE) +
+    labs(title = paste0(sY, ": pixel deviation from HYPERNETS, ", d_i, " (rank ", rank_i, " worst day)"),
+         x = NULL, y = NULL) +
+    theme_bw()
+  ggsave(file.path(out_dir, paste0("outlier_day_map_", sY, "_", d_i, ".png")), p_i, width = 12, height = 10)
+}
+
+
+# Per-pixel time series: is a bad day driven by ALL pixels or just SOME? -----
+# The daily/monthly summaries above only show the mean |Hyp - Sat| per day,
+# which can't distinguish a day where every pixel in the box moved together
+# (systematic, e.g. S3A 2025-06-28/S3B 2025-12-03 above -- outlier_day_map_S3A_
+# 2025-06-28.png/outlier_day_map_S3B_2025-12-03.png show every pixel shifted
+# the same way) from a day where only a handful of pixels are off (localised,
+# e.g. oyster-bed contamination). This plots every pixel's raw (signed)
+# deviation_hyp = Hyp - Sat across the full year, one line per pixel_pos,
+# faceted by wavelength: if a spike day's lines fan out, only some pixels are
+# bad; if they move together, it's every pixel. One figure per sensor (same
+# per-sensor convention as the rest of this script).
+#
+# Duplicate (match_date, pixel_pos, wavelength_facet) rows -- same-day repeat
+# matchups, or PACE's many native wavelengths folded into one facet bin -- are
+# averaged first so each pixel draws one clean point/line per day rather than
+# a zig-zag of same-day values.
+
+for(sY in sensor_Y_thfr){
+  f <- file.path(out_dir, paste0("pixel_deviation_all_", sY, ".csv"))
+  if(!file.exists(f)) next
+
+  df_pixel_ts <- read_csv(f, show_col_types = FALSE) |>
+    mutate(wavelength_facet = if(sY == "PACE"){
+      as.character(cut(wavelength, breaks = pace_nm_breaks, labels = pace_nm_labels, include.lowest = TRUE))
+    } else {
+      as.character(wavelength)
+    }) |>
+    summarise(deviation_hyp = mean(deviation_hyp, na.rm = TRUE),
+              .by = c(match_date, pixel_pos, wavelength_facet))
+
+  # Numeric col/row ordering (not alphabetical), same convention as the
+  # pixel-position figures above
+  pixel_pos_levels <- df_pixel_ts |>
+    distinct(pixel_pos) |>
+    separate(pixel_pos, into = c("col", "row"), sep = ",", convert = TRUE, remove = FALSE) |>
+    arrange(col, row) |>
+    pull(pixel_pos)
+
+  p_pixel_ts <- df_pixel_ts |>
+    mutate(pixel_pos = factor(pixel_pos, levels = pixel_pos_levels)) |>
+    ggplot(aes(x = match_date, y = deviation_hyp, colour = pixel_pos, group = pixel_pos)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_line(alpha = 0.4) +
+    geom_point(size = 0.8, alpha = 0.6) +
+    scale_colour_viridis_d(name = "pixel_pos") +
+    facet_wrap(~wavelength_facet, scales = "free_y") +
+    labs(title = paste0("THFR ", sY, " -- per-pixel Hyp - Sat deviation, every matchup"),
+         x = NULL, y = "Hyp - Sat (per pixel)") +
+    theme_bw()
+  ggsave(file.path(out_dir, paste0("pixel_timeseries_", sY, ".png")), p_pixel_ts, width = 12, height = 9)
+}
+
