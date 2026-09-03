@@ -369,7 +369,8 @@ available_sites <- function(sat_name){
 # Site-specific matchup time-window limit (minutes), added 2026-07-10.
 # NB: unlike Doxaran et al. 2024 (who additionally varied the *spatial* matchup criterion per site --
 # a 3x3-pixel box at Berre vs. nearest-pixel-only at Gironde), this pipeline keeps ONE spatial rule
-# (nearest pixel + a fixed dist_limit = 10 km ceiling, see process_sensor()) for every site, and
+# (nearest pixel + a per-sensor dist_limit = 3x sensor_resolution_km(sensor_Y), see process_sensor();
+# a flat 10 km ceiling was used until 2026-09-03) for every site, and
 # varies only the TIME window: MAFR's fast tidal turbidity dynamics need a tighter window than THFR's
 # comparatively stable lagoon water, mirroring Doxaran et al. 2024's Gironde (+/-15 min) vs Berre
 # (+/-30 min) choice. See code/3_sensitivity.R for the empirical check behind these two numbers, and
@@ -383,31 +384,88 @@ site_diff_time_limit <- function(site_name){
   )
 }
 
-# Average multiple same-day HYPERNETS-scan-vs-satellite-overpass matchups into one representative
-# daily value per wavelength, for use at the global-stats stage. Added 2026-07-10 per project
-# decision: rather than simply tightening/loosening the diff_time filter per site, matchups that pass
-# the site-specific site_diff_time_limit() threshold should be averaged per day before
-# global per-wavelength statistics are computed, rather than treated as independent data points --
-# this also directly addresses the "not all matchups are independent of one another" caveat raised in
-# the Tara "in review" paper's Conclusion.
+# Site-specific RHOW plausibility ceiling, added 2026-09-03. Derived from the empirical max
+# HYPERNETS RHOW observed at each site across every sensor family/waveband (a full scan of every
+# raw matchup .csv for MAFR/THFR found a natural max of 0.174 at MAFR, OLCI 681 nm, and 0.0294 at
+# THFR, VIIRS SNPP 551 nm -- see chat log 2026-09-03), with headroom applied (~45% at MAFR, ~70% at
+# THFR) so the ceiling doesn't clip genuine turbid-water extremes while still catching retrieval
+# failures (sun glint, land/adjacency contamination, thin cloud) that push RHOW well outside the
+# physically plausible range for each site. Used as a QC gate on BOTH the Hyp and satellite RHOW
+# values (not just Hyp -- unlike the pre-existing Hyp <= 1 gate in global_scatterplot(), which only
+# catches gross parsing failures like netCDF fill values, e.g. Bug: three matchup files found with
+# Hyp == 9.969209968386869e+36, the standard netCDF double fill value).
+site_rhow_limit <- function(site_name){
+  dplyr::case_when(
+    site_name == "MAFR" ~ 0.25,
+    site_name == "THFR" ~ 0.05,
+    TRUE ~ 0.05 # fallback for any future/unrecognised site
+  )
+}
+
+# Nominal per-sensor pixel resolution (km at nadir), added 2026-09-03. Used to derive a per-pixel
+# distance QC gate (3x the sensor's own resolution -- e.g. PACE's 1 km resolution gives a 3 km
+# ceiling) that is much tighter than the fixed 10 km dist_limit used at the whole-matchup level
+# (process_sensor()/db_export_matchups_site()), since a pixel several resolution-cells away from
+# the station is increasingly unlikely to represent the water actually seen by HYPERNETS.
+sensor_resolution_km <- function(sensor_Y){
+  if(sensor_Y %in% c("S3A", "S3B")){
+    0.3   # Sentinel-3 OLCI Full Resolution, ~300 m at nadir
+  } else if(sensor_Y == "AQUA"){
+    1     # MODIS-Aqua ocean-colour bands, 1 km at nadir
+  } else if(sensor_Y %in% c("SNPP", "JPSS1", "JPSS2")){
+    0.75  # VIIRS ocean-colour EDR, ~750 m at nadir
+  } else if(sensor_Y == "PACE"){
+    1     # PACE OCI, ~1 km at nadir
+  } else {
+    stop(paste0("Incorrect value for 'sensor_Y' : ", sensor_Y))
+  }
+}
+
+# Select, per calendar day, the single closest-in-time HYPERNETS-scan-vs-satellite-overpass
+# matchup, for use at the global-stats stage. Added 2026-07-10 as daily_average_matchups()
+# (averaging same-day matchups together); replaced 2026-09-03 with closest-match selection instead
+# -- HYPERNETS scans and satellite overpasses on the same day are not independent measurements of
+# the same water, so rather than blend them, only the temporally-nearest pairing is retained per
+# day. This still addresses the "not all matchups are independent of one another" caveat raised in
+# the Tara "in review" paper's Conclusion, just via selection rather than averaging.
 #
-# Validated 2026-07-14 against real MAFR data for all four sensor families (OLCI, MODIS, VIIRS,
-# OCI/PACE). Date-extraction logic reuses the exact convention used in global_scatterplot() -- i.e.
-# split file_name on "_", take the 2nd element, split that on "T", take the 1st element -- confirmed
-# to work for S3A/S3B/JPSS1/JPSS2/SNPP/AQUA/PACE naming patterns at both MAFR and THFR.
+# Date-extraction logic reuses the exact convention used in global_scatterplot() -- i.e. split
+# file_name on "_", take the 2nd element, split that on "T", take the 1st element -- confirmed to
+# work for S3A/S3B/JPSS1/JPSS2/SNPP/AQUA/PACE naming patterns at both MAFR and THFR.
+#
+# "Within the site time-difference limit" is NOT re-enforced here -- df is already restricted (via
+# global_stats()'s file_list_no_out, built from matchup_stats_RHOW_<sensor_Z>.csv, which only ever
+# contains files that already passed process_sensor()'s diff_time <= diff_time_limit gate) to
+# already-qualifying candidates, so "closest" selection only ever chooses among matchups that
+# already satisfy site_diff_time_limit().
+#
+# Selection happens once per (day, file_name), never independently per (day, wavelength) row --
+# df has one row per (file_name, wavelength), and diff_time is constant across all wavelength-rows
+# of a given file_name, but resolving a tie independently per wavelength could in principle pick a
+# DIFFERENT winning file_name for different wavelengths on the same day, silently splicing together
+# two different matchup events. This picks exactly one winning file_name per day first (with a
+# deterministic tie-break: smallest diff_time, then smallest dist, then alphabetically-first
+# file_name), then keeps every row of that one file.
 #
 # df: expects the long-format data.frame produced by load_matchup_long()/load_matchups_folder(long =
-#     TRUE), i.e. one row per file_name x wavelength, already filtered to wavelength %in% W_nm and to
-#     files passing site_diff_time_limit() (that filtering happens upstream, in global_stats()).
+#     TRUE), i.e. one row per file_name x wavelength, already filtered to wavelength %in% W_nm, with
+#     diff_time and dist already joined on by file_name (see global_stats()).
 
-daily_average_matchups <- function(df, site_name){
-  df |>
+daily_closest_matchup <- function(df, site_name){
+  df <- df |>
     mutate(match_date = sapply(str_split(file_name, "_"), "[[", 2),
            match_date = sapply(str_split(match_date, "T"), "[[", 1),
-           match_date = as.Date(match_date, format = "%Y%m%d")) |>
-    summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)),
-              n_scans_averaged = dplyr::n(),
-              .by = c("match_date", "wavelength")) |>
+           match_date = as.Date(match_date, format = "%Y%m%d"))
+
+  # One row per (day, file_name); pick the single winning file per day
+  winners <- df |>
+    dplyr::select(match_date, file_name, diff_time, dist) |>
+    distinct() |>
+    arrange(match_date, diff_time, dist, file_name) |>
+    slice_head(n = 1, by = match_date)
+
+  df |>
+    filter(file_name %in% winners$file_name) |>
     mutate(site_name = site_name, .before = "match_date")
 }
 
@@ -701,72 +759,68 @@ process_matchup_file <- function(file_path){
 
   # Load the mean data
   df_mean <- load_matchup_mean(file_path)
-  
-  # Sensors to be compared
-  sensors <- unique(df_mean$sensor)
-  
-  # Prep empty df for 2+ sensor comparisons
-  df_results <- data.frame()
-  
-  # The double loop
-  for(i in 1:length(sensors)){
-    for(j in 1:length(sensors)){
-      if(sensors[j] != sensors[i]){
-        
-        # Get data.frame for matchup based on the two sensors being compared
-        df_sensor_sub <- df_mean |> 
-          filter(sensor %in% c(sensors[i], sensors[j])) |> 
-          mutate(dateTime = as.POSIXct(paste(day, time), format = "%Y%m%d %H%M%S", tz = "Europe/Paris"), .before = "latitude", .keep = "unused")
-        
-        # get distances
-        hav_dist <- round(distHaversine(df_sensor_sub[c("longitude", "latitude")])/1000, 2) # distance in km
-        
-        # Time differences
-        time_diff <- round(as.numeric(abs(difftime(df_sensor_sub$dateTime[[1]],
-                                                   df_sensor_sub$dateTime[[2]], units = "mins"))))
-        
-        # Melt it for additional stats
-        df_sensor_long <- df_sensor_sub |> 
-          # dplyr::select(!(colnames(df_sensor_sub) %in% c("data_type", "dateTime", "longitude", "latitude", "radiometer_id", 
-          #   "pixel_pos", "type", "variability_centered"))) |>
-          pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
-          mutate(wavelength = as.numeric(wavelength)) |> 
-          # pivot_wider(names_from = sensor, values_from = value) |> 
-          # filter(wavelength >= 380, wavelength <= 700) |> 
-          na.omit()
-        
-        # Widen for use with stats function
-        df_sensor_wide <- df_sensor_long |> 
-          dplyr::select(-c(dateTime, longitude, latitude)) |>
-          pivot_wider(names_from = sensor, values_from = value) |> 
-          na.omit()
 
-        # get vectors
-        x_vec <- df_sensor_wide[[sensors[i]]]
-        y_vec <- df_sensor_wide[[sensors[j]]]
-        
-        # Base stats
-        df_stats <- base_stats(x_vec, y_vec)
-        
-        # Create data.frame of results and add them to df_results
-        df_res <- df_stats |> 
-          mutate(sensor_X = sensors[i],
-                 sensor_Y = sensors[j],
-                 lon_X = df_sensor_sub$longitude[[i]],
-                 lat_X = df_sensor_sub$latitude[[i]],
-                 lon_Y = df_sensor_sub$longitude[[j]],
-                 lat_Y = df_sensor_sub$latitude[[j]],
-                 dist = hav_dist,
-                 dateTime_X = df_sensor_sub$dateTime[[i]],
-                 dateTime_Y = df_sensor_sub$dateTime[[j]],
-                 diff_time = time_diff, .before = "n")
-        df_results <- rbind(df_results, df_res)
-      }
-    }
+  # Sensors to be compared -- always exactly 2 in practice (Hyp + one satellite; Hyp_nosc is
+  # already dropped upstream in load_matchup_mean()). Computed ONCE per file, sensor_X = Hyp
+  # (the HYPERNETS in-situ reference) vs sensor_Y = the satellite -- not both directions (removed
+  # 2026-09-03; the reverse Sat-vs-Hyp computation was a leftover from a previous project and
+  # base_stats() is not symmetric, so it was silently producing a second, differently-computed
+  # row per file that nothing downstream used).
+  sensors <- unique(df_mean$sensor)
+  if(length(sensors) != 2 || !("Hyp" %in% sensors)){
+    stop(paste0("process_matchup_file() expects exactly 2 sensors incl. 'Hyp', got: ",
+                paste(sensors, collapse = ", "), " in file: ", basename(file_path)))
   }
-  
-  # For loop that cycles through the requested wavelengths and calculates stats
-  df_results <- df_results |> mutate(file_name = basename(file_path), .before = sensor_X)
+  sensor_X_name <- "Hyp"
+  sensor_Y_name <- setdiff(sensors, "Hyp")
+
+  # Get data.frame for the matchup
+  df_sensor_sub <- df_mean |>
+    mutate(dateTime = as.POSIXct(paste(day, time), format = "%Y%m%d %H%M%S", tz = "Europe/Paris"), .before = "latitude", .keep = "unused")
+
+  # get distances
+  hav_dist <- round(distHaversine(df_sensor_sub[c("longitude", "latitude")])/1000, 2) # distance in km
+
+  # Time differences
+  time_diff <- round(as.numeric(abs(difftime(df_sensor_sub$dateTime[[1]],
+                                             df_sensor_sub$dateTime[[2]], units = "mins"))))
+
+  # Row indices for the two sensors in df_sensor_sub, needed for the per-row lon/lat/dateTime below
+  idx_X <- which(df_sensor_sub$sensor == sensor_X_name)
+  idx_Y <- which(df_sensor_sub$sensor == sensor_Y_name)
+
+  # Melt it for additional stats
+  df_sensor_long <- df_sensor_sub |>
+    pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |>
+    mutate(wavelength = as.numeric(wavelength)) |>
+    na.omit()
+
+  # Widen for use with stats function
+  df_sensor_wide <- df_sensor_long |>
+    dplyr::select(-c(dateTime, longitude, latitude)) |>
+    pivot_wider(names_from = sensor, values_from = value) |>
+    na.omit()
+
+  # get vectors
+  x_vec <- df_sensor_wide[[sensor_X_name]]
+  y_vec <- df_sensor_wide[[sensor_Y_name]]
+
+  # Base stats
+  df_stats <- base_stats(x_vec, y_vec)
+
+  # Create data.frame of results
+  df_results <- df_stats |>
+    mutate(sensor_X = sensor_X_name,
+           sensor_Y = sensor_Y_name,
+           lon_X = df_sensor_sub$longitude[[idx_X]],
+           lat_X = df_sensor_sub$latitude[[idx_X]],
+           lon_Y = df_sensor_sub$longitude[[idx_Y]],
+           lat_Y = df_sensor_sub$latitude[[idx_Y]],
+           dist = hav_dist,
+           dateTime_X = df_sensor_sub$dateTime[[idx_X]],
+           dateTime_Y = df_sensor_sub$dateTime[[idx_Y]],
+           diff_time = time_diff, .before = "n") |>
+    mutate(file_name = basename(file_path), .before = sensor_X)
   return(df_results)
 }
 
@@ -870,10 +924,15 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   # site -- raw matchup filenames are not unique *across* sites (see path_site_name()), so an
   # unrestricted basename match below could wrongly include/exclude a file based on another
   # site's namesake rather than this one's own QC/outlier status
+  # diff_time/dist are retained (not just file_name) so daily_closest_matchup() below can select
+  # the single closest-in-time matchup per day without recomputing anything
   match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |>
     filter(.data$site_name == .env$site_name) |>
-    dplyr::select(file_name) |> distinct()
-  if(nrow(match_base_details) == 0) stop("Individual matchup file not loaded correctly.")
+    dplyr::select(file_name, diff_time, dist) |> distinct()
+  if(nrow(match_base_details) == 0){
+    message("No QC-passed files for site ", site_name, ", sensor_Y ", sensor_Y, " -- skipping")
+    return(tibble())
+  }
 
   # Filter accordingly
   # NB: This creates the list of valid matchups after screening for spatiotemporal range
@@ -887,7 +946,10 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   # NB: This creates the list of valid matchups after screening for outliers in the single matchup QC process
   file_list_no_out <- file_list_clean[!basename(file_list_clean) %in% outliers_sat$file_name]
   # file_list_no_out <- file_list_clean # Or rather do not remove outliers as this is too subjective of a process
-  if(length(file_list_no_out) == 0) stop(paste("No files passed QC for", site_name, sensor_X, sensor_Y))
+  if(length(file_list_no_out) == 0){
+    message("No files passed QC (post-outlier-screen) for ", site_name, " ", sensor_X, " ", sensor_Y, " -- skipping")
+    return(tibble())
+  }
   
   # Load data
   match_base <- furrr::future_map_dfr(file_list_no_out, load_matchup_long, .options = furrr_options(seed = TRUE))
@@ -907,9 +969,12 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   match_base_filt <- filter(match_base, wavelength %in% W_nm) #|>
     # mutate(wavelength_idx = wavelength, .before = wavelength)
 
-  # Optional day-level temporal averaging using the site-specific time window
+  # Attach diff_time/dist (per file_name) needed by daily_closest_matchup() below
+  match_base_filt <- match_base_filt |> left_join(match_base_details, by = "file_name")
+
+  # Optional day-level collapsing: keep only the single closest-in-time matchup per day
   if(daily_average){
-    match_base_filt <- daily_average_matchups(match_base_filt, site_name)
+    match_base_filt <- daily_closest_matchup(match_base_filt, site_name)
   }
 
   # Get the requested wavelengths global stats, add matchup count, and exit
@@ -968,10 +1033,16 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TR
   # Process matchups and save output
   if(stat_choice == "matchup"){
     proc_res <- furrr::future_pmap_dfr(ply_grid, process_matchup_folder, .options = furrr_options(seed = TRUE))
-    # Set time and distance limits
+    # Set time and distance limits. Distance ceiling is resolution-based (3x the satellite's own
+    # nominal pixel resolution, sensor_resolution_km()) rather than a flat 10 km, mirroring the
+    # per-pixel gate already applied to THFR_NE/THFR_poly in db_export_matchups_site(). Applied
+    # uniformly to every site/sensor, including THFR/PACE (see manuscript/upstream-data-bugs.md --
+    # this is expected to eliminate most/all THFR PACE matchups from the QC-passed output, by
+    # design, per 2026-09-03 decision; global_stats() skips gracefully with a message() rather than
+    # erroring when a site/sensor combination ends up with zero QC-passed files).
     proc_res <- proc_res |>
       mutate(diff_time_limit = site_diff_time_limit(site_name), .after = diff_time) |>
-      mutate(dist_limit = 10, .after = dist)
+      mutate(dist_limit = vapply(sensor_Y, sensor_resolution_km, numeric(1)) * 3, .after = dist)
     # Enforce time and distance constraint
     proc_res_clean <- proc_res |>
       filter(diff_time <= diff_time_limit) |>
@@ -1596,12 +1667,34 @@ db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_t
     # db_matchup_long()/process_sensor() gate distance) is recomputed here instead. Both derived
     # sites are reinterpretations of the same underlying THFR matchups, so this stays hardcoded
     # to THFR's own QC policy regardless of site_name.
+    
+    # Three further per-pixel QC gates applied here, before pixel_filter_fn()/write_matchup_csv_ne()
+    # aggregate the pixel box into one matchup value (and long before the separate day-level
+    # daily_closest_matchup() step further downstream in the main CSV pipeline): a site-specific
+    # RHOW plausibility ceiling (site_rhow_limit()) applied to both Hyp and the satellite pixel
+    # value, a per-pixel distance gate at 3x the sensor's own nominal resolution
+    # (sensor_resolution_km()), tighter than the 10 km whole-matchup dist_limit above, and a
+    # per-pixel-per-waveband negative-value gate (RHOW < 0 is optically impossible; satellite pixels
+    # commonly go negative after an over-aggressive atmospheric/glint correction, most often in the
+    # blue bands) applied to both Hyp and the satellite pixel value.
     sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
+    rhow_limit <- site_rhow_limit("THFR")
+    pixel_dist_limit <- 3 * sensor_resolution_km(sensor_Y)
     df_pixel <- df_pixel |>
       mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
-      filter(diff_time_min <= site_diff_time_limit("THFR"), dist_km_matchup <= 10)
+      # Filter by QC limits
+             # Time limit of 15 mins for MAFR, 30 for THFR
+      filter(diff_time_min <= site_diff_time_limit("THFR"),
+             # Filter by RHOW limit, 0.25 for MAFR, 0.05 for THFR
+             Hyp <= rhow_limit, 
+             .data[[sensor_Y]] <= rhow_limit,
+             # Remove negative values
+             Hyp >= 0, 
+             .data[[sensor_Y]] >= 0,
+             # Distance limit = 3 x sensor resolution
+             dist_km_matchup <= pixel_dist_limit)
     if(nrow(df_pixel) == 0){
-      message("  No matchups for ", sensor_Y, " pass the time/distance QC gate -- skipping")
+      message("  No matchups for ", sensor_Y, " pass the time/distance/RHOW/pixel-distance QC gate -- skipping")
       next
     }
 
@@ -2148,7 +2241,7 @@ global_scatterplot_stack <- function(sensor_Z){
   # Stack panels vertically and exit
   fig_stack <- ggpubr::ggarrange(plotlist = fig_list, ncol = 1, nrow = sensor_count, heights = panel_heights) +
     ggpubr::bgcolor("white") + ggpubr::border("white", size = 2)
-  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 16, height = 5 * sensor_count)
+  ggsave(paste0("figures/global_scatter_RHOW_",sensor_Z,".png"), fig_stack, width = 20, height = 5 * sensor_count)
 }
 
 # Per-sensor-family scatterplot faceted by waveband instead of by site, with site shown as point

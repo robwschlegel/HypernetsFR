@@ -35,18 +35,20 @@ process_sensor("OCI")
 matchup_single_all <- map_dfr(dir("output", pattern = "matchup_stats_", full.names = TRUE), read_csv)
 
 # Date and time range of samples per sensor
+# NB: sensor_Y/dateTime_Y (not sensor_X/dateTime_X) since process_matchup_file() now computes
+# stats exactly once per file with sensor_X fixed to "Hyp" and sensor_Y the satellite (2026-09-03 --
+# previously also computed the reverse direction, which is what this used to key off of).
 matchup_date_time_range <- matchup_single_all |>
-  dplyr::select(sensor_X, dateTime_X) |>
+  dplyr::select(sensor_Y, dateTime_Y) |>
   distinct() |>
-  mutate(date = as.Date(dateTime_X),
-         time = format(dateTime_X, format = "%H:%M:%S")) |>
+  mutate(date = as.Date(dateTime_Y),
+         time = format(dateTime_Y, format = "%H:%M:%S")) |>
   summarise(date_min = min(date), date_max = max(date),
-            time_min = min(time), time_max = max(time), .by = "sensor_X")
+            time_min = min(time), time_max = max(time), .by = "sensor_Y")
 
 # Unique number of satellite passes available for each platform+sensor/version
 matchup_sat_uniq <- matchup_single_all |>
-  dplyr::select(sensor_X, dateTime_X) |>
-  filter(sensor_X != "Hyp") |>
+  dplyr::select(sensor_Y, dateTime_Y) |>
   distinct() |>
-  summarise(sat_count = n(), .by = "sensor_X")
+  summarise(sat_count = n(), .by = "sensor_Y")
 

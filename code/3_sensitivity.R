@@ -1,18 +1,18 @@
 # code/3_sensitivity.R
 # Sensitivity analyses used to justify the match-up protocol's time-window and
 # distance-window choices (see manuscript/roadmap.md, "site-specific matchup
-# criteria" item, and site_diff_time_limit()/daily_average_matchups() in
+# criteria" item, and site_diff_time_limit()/daily_closest_matchup() in
 # code/0_functions.R).
 #
 # NB: unlike Doxaran et al. 2024 (who used a fixed 3x3-pixel-box/+-30 min window at
 # the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde),
-# this pipeline uses ONE distance ceiling (dist_limit = 10 km; raised from 5 km on
-# 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset.
-# See manuscript/upstream-data-bugs.md Bug 9) for every site, but a SITE-SPECIFIC time
-# window (site_diff_time_limit() in code/0_functions.R: 15 min at MAFR, 30 min at THFR). 
-# This script checks both choices, and is also where the eventual before/after comparison of
-# daily_average_matchups() (see code/0_functions.R) should live once that first-draft
-# function has been validated.
+# this pipeline uses a PER-SENSOR distance ceiling (dist_limit = 3x sensor_resolution_km(sensor_Y),
+# e.g. 0.9 km for OLCI, 3 km for AQUA/PACE, 2.25 km for VIIRS -- a flat 10 km ceiling, raised from
+# 5 km on 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset (see
+# manuscript/upstream-data-bugs.md), was used until 2026-09-03) for every site, but a SITE-SPECIFIC time
+# window (site_diff_time_limit() in code/0_functions.R: 15 min at MAFR, 30 min at THFR).
+# This script checks both choices, and is also where the before/after comparison of
+# daily_closest_matchup() (see code/0_functions.R) lives.
 #
 # This script is intended to be run AFTER 1_matchups_single.R (needs
 # output/matchup_stats_RHOW_*.csv and output/matchup_noQC_stats_RHOW_*.csv) and is
@@ -34,33 +34,37 @@ source("code/0_functions.R")
 matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup_noQC_stats_RHOW_", 
                             full.names = TRUE), read_csv, show_col_types = FALSE)
 
-# Confirm nearest-pixel distances relative to the 10 km ceiling.
-# NB: dist_limit was raised from 5 km to 10 km on 2026-07-14 to accommodate a systematic
-# pixel-extraction offset in THFR PACE data (Bug 9 in manuscript/upstream-data-bugs.md).
-# For MAFR and all sensors except THFR PACE, distances remain well under 1 km in practice.
+# Confirm nearest-pixel distances relative to the per-sensor distance ceiling.
+# NB: dist_limit is now 3x sensor_resolution_km(sensor_Y) (2026-09-03), replacing the old flat
+# 10 km ceiling (itself raised from 5 km on 2026-07-14 to accommodate a systematic pixel-extraction
+# offset in THFR PACE data -- see manuscript/upstream-data-bugs.md). For MAFR and all sensors
+# except THFR PACE, distances remain well under 1 km in practice.
 dist_summary <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   summarise(dist_min = min(dist, na.rm = TRUE),
             dist_median = median(dist, na.rm = TRUE),
             dist_p95 = quantile(dist, 0.95, na.rm = TRUE),
             dist_max = max(dist, na.rm = TRUE),
+            dist_limit = sensor_resolution_km(sensor_Y[1]) * 3,
             n_over_1km = sum(dist > 1, na.rm = TRUE),
-            n_over_5km  = sum(dist > 5,  na.rm = TRUE),
-            n_over_10km = sum(dist > 10, na.rm = TRUE),
+            n_over_limit = sum(dist > dist_limit, na.rm = TRUE),
             n = dplyr::n(),
             .by = c("site_name", "sensor_Y"))
 print(dist_summary)
 
-# Visualise the distance distribution per site/sensor, with the 5 km ceiling marked
+# Visualise the distance distribution per site/sensor, with the per-sensor 3x-resolution ceiling
+# marked (varies by facet column, since the plot already facets by sensor_Y)
+dist_limit_ref <- tibble(sensor_Y = unique(matchup_all_noQC$sensor_Y)) |>
+  mutate(dist_limit = vapply(sensor_Y, sensor_resolution_km, numeric(1)) * 3)
+
 pl_dist <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   ggplot(aes(x = dist)) +
   geom_histogram(binwidth = 0.1) +
-  geom_vline(xintercept = 10, colour = "red", linetype = "dashed") +
-  geom_vline(xintercept = 5,  colour = "orange", linetype = "dotted") +
+  geom_vline(data = dist_limit_ref, aes(xintercept = dist_limit), colour = "red", linetype = "dashed") +
   labs(x = "Distance between HYPERNETS station and nearest satellite pixel (km)",
        y = "Count",
-       title = "Distance check (10 km ceiling in red; original 5 km threshold in orange)") +
+       title = "Distance check (per-sensor 3x-resolution ceiling shown in red)") +
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = "black"))
@@ -104,16 +108,14 @@ time_trend_test <- matchup_all_noQC |>
 print(time_trend_test)
 
 
-# Daily-averaging sensitivity (site-specific time window) -----------------------
+# Daily closest-match sensitivity (site-specific time window) -----------------------
 
-# TODO: once daily_average_matchups() (code/0_functions.R) has been validated against real
-# multi-day MAFR/THFR data, compare global_stats(..., daily_average = FALSE) against
-# global_stats(..., daily_average = TRUE) here, per site and sensor family, to quantify how
-# much the day-averaging step changes the headline Error/Bias values, and to check whether it
-# meaningfully addresses the "not all matchups are independent of one another" caveat raised in
-# the Tara "in review" paper's Conclusion. Not yet run -- needs THFR data, and confirmation
-# that daily_average_matchups()'s file-name date-parsing is robust across all four sensor
-# families' naming conventions (see CLAUDE.md's note on satellite-family naming inconsistencies).
+# Compare global_stats(..., daily_average = FALSE) (every QC-passed matchup treated as an
+# independent data point) against global_stats(..., daily_average = TRUE) (daily_closest_matchup():
+# only the single closest-in-time matchup per day is kept, see code/0_functions.R) here, per site
+# and sensor family, to quantify how much day-level collapsing changes the headline Error/Bias
+# values, and to check whether it meaningfully addresses the "not all matchups are independent of
+# one another" caveat raised in the Tara "in review" paper's Conclusion.
 #
 compare_daily_avg <- function(site_name, sensor_Y){
   no_avg <- global_stats(site_name, sensor_Y, daily_average = FALSE) |> mutate(daily_average = FALSE)
@@ -126,6 +128,6 @@ pl_daily_avg <- daily_avg_comparison |>
   ggplot(aes(x = wavelength, y = Error_50, colour = daily_average, size = n_w_nm_clean)) +
   geom_point() +
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
-  labs(title = "Effect of daily averaging on Error (%) per wavelength", size = "Unique \n data points")
+  labs(title = "Effect of daily closest-match selection on Error (%) per wavelength", size = "Unique \n data points")
 ggsave("figures/sensitivity_daily_average.png", pl_daily_avg, width = 12, height = 8)
 
