@@ -13,8 +13,10 @@ source("code/0_functions.R")
 # folders (db_export_matchups_site() / write_matchup_csv_ne() in code/0_functions.R), kept fully
 # independent of THFR/MAFR (not a replacement for THFR anywhere): THFR_NE restricts to the NE
 # quadrant of the inner 3x3 pixel grid, THFR_poly restricts to the hand-drawn clean-water polygon,
-# and THFR_pixel applies no spatial filter at all (isolates the effect of the shared per-pixel QC
-# gates in db_export_matchups_site() from the spatial filters used by THFR_NE/THFR_poly).
+# and THFR_pixel restricts only to the inner 3x3 pixel grid with no further spatial subsetting
+# (isolates the effect of the shared per-pixel QC gates in db_export_matchups_site() -- RHOW
+# ceiling, negative-value, distance, and minimum-valid-pixel-count -- from the spatial filters
+# used by THFR_NE/THFR_poly).
 # All three are first-class sites alongside MAFR/THFR (added to available_sites()'s candidate
 # list) so they must be generated here, before process_sensor() below, which picks them up
 # automatically via sensor_grid()/available_sites() the same way it already does for MAFR/THFR.

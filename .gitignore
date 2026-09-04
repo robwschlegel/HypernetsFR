@@ -12,6 +12,9 @@
 # Exploratory outputs
 meta/pixel_explore_output
 
+# Figure 1 IGN tile cache
+meta/fig1_tile_cache
+
 # Example code in package build process
 *-Ex.R
 

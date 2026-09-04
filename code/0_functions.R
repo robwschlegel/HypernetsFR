@@ -203,7 +203,15 @@ load_matchups_folder <- function(site_name, sat_name, long = FALSE){
   
   # Remove stats output files
   file_list_clean <- file_list[!grepl("all|global", file_list)]
-  
+
+  # Graceful skip when a site/sensor combination has no exported matchup files at all -- without
+  # this, the mutate(.before = wavelength/sensor) below fails on the resulting zero-column empty
+  # tibble ("Column `wavelength` doesn't exist"), aborting the whole calling pmap_dfr()/figure.
+  if(length(file_list_clean) == 0){
+    message("No matchup files for ", site_name, " ", sat_name, " -- skipping")
+    return(tibble())
+  }
+
   # Load data
   if(long){
     match_base <- furrr::future_map_dfr(file_list_clean, load_matchup_long, .options = furrr_options(seed = TRUE)) |> 
@@ -369,8 +377,8 @@ available_sites <- function(sat_name){
 # Site-specific matchup time-window limit (minutes), added 2026-07-10.
 # NB: unlike Doxaran et al. 2024 (who additionally varied the *spatial* matchup criterion per site --
 # a 3x3-pixel box at Berre vs. nearest-pixel-only at Gironde), this pipeline keeps ONE spatial rule
-# (nearest pixel + a per-sensor dist_limit = 3x sensor_resolution_km(sensor_Y), see process_sensor();
-# a flat 10 km ceiling was used until 2026-09-03) for every site, and
+# (nearest pixel + a per-sensor dist_limit = 2x sensor_resolution_km(sensor_Y), see process_sensor();
+# a flat 10 km ceiling was used until 2026-09-03, and a 3x multiplier until 2026-09-04) for every site, and
 # varies only the TIME window: MAFR's fast tidal turbidity dynamics need a tighter window than THFR's
 # comparatively stable lagoon water, mirroring Doxaran et al. 2024's Gironde (+/-15 min) vs Berre
 # (+/-30 min) choice. See code/3_sensitivity.R for the empirical check behind these two numbers, and
@@ -403,9 +411,9 @@ site_rhow_limit <- function(site_name){
 }
 
 # Nominal per-sensor pixel resolution (km at nadir), added 2026-09-03. Used to derive a per-pixel
-# distance QC gate (3x the sensor's own resolution -- e.g. PACE's 1 km resolution gives a 3 km
-# ceiling) that is much tighter than the fixed 10 km dist_limit used at the whole-matchup level
-# (process_sensor()/db_export_matchups_site()), since a pixel several resolution-cells away from
+# distance QC gate (2x the sensor's own resolution, tightened from 3x on 2026-09-04 -- e.g. PACE's
+# 1 km resolution gives a 2 km ceiling) that is much tighter than the fixed 10 km dist_limit used
+# at the whole-matchup level (process_sensor()/db_export_matchups_site()), since a pixel several resolution-cells away from
 # the station is increasingly unlikely to represent the water actually seen by HYPERNETS.
 sensor_resolution_km <- function(sensor_Y){
   if(sensor_Y %in% c("S3A", "S3B")){
@@ -418,6 +426,29 @@ sensor_resolution_km <- function(sensor_Y){
     1     # PACE OCI, ~1 km at nadir
   } else {
     stop(paste0("Incorrect value for 'sensor_Y' : ", sensor_Y))
+  }
+}
+
+# Minimum valid-pixel count per matchup-wavelength, added 2026-09-04. Mirrors Hypernets_matchups'
+# own rule for the real MAFR/THFR data (>= 6 of the 9 pixels in its native 3x3 box must be valid
+# before it will compute a daily pixel-box mean) -- the DB-derived sites (THFR_NE/THFR_poly/
+# THFR_pixel) recompute pixel-box aggregates themselves in write_matchup_csv_ne(), so this closes
+# that gap for them. Different minimums per site reflect how many pixels are ever physically
+# available under each site's own spatial restriction (THFR_pixel: full inner 3x3, no further
+# restriction; THFR_NE: NE-quadrant of the inner 3x3; THFR_poly: hand-drawn clean-water polygon --
+# S3A/S3B's finer 300m resolution puts more candidate pixels in a given area than the coarser
+# sensors, hence the higher S3A/S3B minimums at both derived sites).
+site_pixel_min <- function(site_name, sensor_Y){
+  if(site_name == "THFR_pixel"){
+    6
+  } else if(site_name == "THFR_NE"){
+    if(sensor_Y %in% c("S3A", "S3B")) 3 else 1
+  } else if(site_name == "THFR_poly"){
+    1 # TEMPORARY (2026-09-04): reduced from 5 (S3A/S3B) / 3 (others) -- the clean-water polygon is
+      # too small for MODIS/VIIRS/OCI to ever clear 3 pixels, leaving those sensors at zero data.
+      # Revisit alongside the other temporary QC relaxations next week.
+  } else {
+    stop(paste0("No pixel-count minimum defined for site_name: ", site_name))
   }
 }
 
@@ -954,11 +985,15 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   # Load data
   match_base <- furrr::future_map_dfr(file_list_no_out, load_matchup_long, .options = furrr_options(seed = TRUE))
   
-  # Melt if S3_all
+  # Melt if S3_all -- only pivot whichever of S3A/S3B columns actually survived QC for this site.
+  # Both are normally present, but a site can end up with only one satellite's files passing QC
+  # (e.g. every S3B file failing the outlier/distance gate for a given site), in which case
+  # match_base never gets an "S3B" column at all and pivot_longer(S3A:S3B, ...) errors.
   if(sensor_Y == "S3_all"){
-    match_base <- match_base |> 
-      pivot_longer(S3A:S3B, names_to = "name", values_to = "S3_all") |> 
-      dplyr::select(-name) |> 
+    s3_cols <- intersect(c("S3A", "S3B"), colnames(match_base))
+    match_base <- match_base |>
+      pivot_longer(all_of(s3_cols), names_to = "name", values_to = "S3_all") |>
+      dplyr::select(-name) |>
       filter(!is.na(S3_all))
   }
   
@@ -996,16 +1031,25 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
 # site_name = "MAFR"; sensor_Y = "PACE"
 # site_name = "MAFR"; sensor_Y = "AQUA"
 process_matchup_folder <- function(site_name, sensor_Y){
-  
+
   # Create file path
   folder_path <- file_path_build(site_name, sensor_Y)
-  
+
   # List all files in directory
   file_list <- list.files(folder_path, pattern = "*.csv", full.names = TRUE)
-  
+
   # Remove files with 'all' or 'global' in the name
   file_list <- file_list[!grepl("all|global", file_list)]
-  
+
+  # Graceful skip when a site/sensor combination has no exported matchup files at all (e.g. a
+  # derived site's spatial + per-pixel QC gates left nothing for a given sensor) -- without this,
+  # the mutate() below fails with "Column `file_name` doesn't exist" on the resulting zero-column
+  # empty tibble, aborting the whole process_sensor() run for every other site/sensor combination.
+  if(length(file_list) == 0){
+    message("No exported matchup files for ", site_name, " ", sensor_Y, " -- skipping")
+    return(tibble())
+  }
+
   # Initialise results data.frame
   df_results <- furrr::future_map_dfr(file_list, process_matchup_file, .options = furrr_options(seed = TRUE)) |>
     mutate(site_name = site_name, .after = file_name)
@@ -1033,16 +1077,15 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TR
   # Process matchups and save output
   if(stat_choice == "matchup"){
     proc_res <- furrr::future_pmap_dfr(ply_grid, process_matchup_folder, .options = furrr_options(seed = TRUE))
-    # Set time and distance limits. Distance ceiling is resolution-based (3x the satellite's own
-    # nominal pixel resolution, sensor_resolution_km()) rather than a flat 10 km, mirroring the
-    # per-pixel gate already applied to THFR_NE/THFR_poly in db_export_matchups_site(). Applied
-    # uniformly to every site/sensor, including THFR/PACE (see manuscript/upstream-data-bugs.md --
-    # this is expected to eliminate most/all THFR PACE matchups from the QC-passed output, by
-    # design, per 2026-09-03 decision; global_stats() skips gracefully with a message() rather than
-    # erroring when a site/sensor combination ends up with zero QC-passed files).
+    # Set time and distance limits.
+    # TEMPORARY (2026-09-04): the resolution-based distance ceiling (2x sensor_resolution_km(),
+    # itself tightened from 3x earlier the same day) turned out to eliminate essentially all MAFR
+    # matchups -- reverted to a flat 5 km ceiling as a stopgap so results can ship today. The
+    # resolution-based approach needs revisiting (properly tuned, not just 2x/3x guesses) --
+    # see manuscript/upstream-data-bugs.md and revisit next week.
     proc_res <- proc_res |>
       mutate(diff_time_limit = site_diff_time_limit(site_name), .after = diff_time) |>
-      mutate(dist_limit = vapply(sensor_Y, sensor_resolution_km, numeric(1)) * 3, .after = dist)
+      mutate(dist_limit = 5, .after = dist)
     # Enforce time and distance constraint
     proc_res_clean <- proc_res |>
       filter(diff_time <= diff_time_limit) |>
@@ -1498,7 +1541,12 @@ db_matchup_all <- function(db_path, sensor_Y_vec = db_satellite_names, agg_metho
 # satellite pixels get averaged.
 # df_ne_matchup: one matchup_id's NE-quadrant satellite pixel rows for one sensor_Y (a subset of
 # db_matchup_pixels()'s output, already filtered to pixel_lat >= lat_Hyp & pixel_lon >= lon_Hyp)
-write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir, tag = "NE"){
+# pixel_min: minimum number of contributing pixels required for a wavelength's mean/SD/CV to be
+#     written at all (site_pixel_min()) -- mirrors Hypernets_matchups' own >=6-of-9-pixels rule.
+#     Wavelengths below this are simply absent from wl_stats below, so they get written as NA in
+#     the exported CSV (existing per-wavelength NA-handling in the write loop further down); other
+#     wavelengths in the same matchup that individually clear the threshold are unaffected.
+write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir, pixel_min, tag = "NE"){
   sat_dt_col <- paste0("dateTime_", sensor_Y)
 
   hyp_ts <- format(df_ne_matchup$dateTime_Hyp[1], "%Y%m%dT%H%M%S", tz = "Europe/Paris")
@@ -1519,7 +1567,8 @@ write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir, tag = "NE"){
     summarise(mean_val = mean(.data[[sensor_Y]], na.rm = TRUE),
               sd_val = sd(.data[[sensor_Y]], na.rm = TRUE),
               n_used = n(),
-              .by = wavelength)
+              .by = wavelength) |>
+    filter(n_used >= pixel_min)   # mirrors Hypernets_matchups' own minimum-valid-pixel rule
   if(nrow(wl_stats) == 0) return(invisible(NULL))
 
   # Single-scalar CV proxy (variability_centered is one value per file, not per wavelength) --
@@ -1638,11 +1687,17 @@ pixel_filter_clean_water <- function(df_pixel){
   df_pixel[lengths(sf::st_within(pts, clean_water_sf)) > 0, ]
 }
 
-# No spatial restriction at all -- keeps every pixel that already passed the per-pixel QC gates in
-# db_export_matchups_site() (RHOW ceiling, negative-value, per-pixel distance). Isolates the effect
-# of that QC from the spatial filters used by THFR_NE/THFR_poly.
-pixel_filter_none <- function(df_pixel){
-  df_pixel
+# Restrict to the inner 3x3 grid (col/row in -1..1) -- matches the box size Hypernets_matchups
+# actually exports to .csv (see pixel_filter_ne_inner3x3()'s comment for the raw-5x5-vs-exported-3x3
+# discrepancy) -- but apply no further spatial restriction on top of that, unlike
+# pixel_filter_ne_inner3x3() (NE quadrant) or pixel_filter_clean_water() (hand-drawn polygon).
+# Isolates the effect of the shared per-pixel QC gates (RHOW ceiling, negative-value, distance,
+# minimum-valid-pixel-count) from any spatial subsetting. Renamed 2026-09-04 from
+# pixel_filter_none() (which applied literally no restriction, so THFR_pixel was drawing from the
+# database's raw 5x5/25-pixel grid rather than Hypernets_matchups' real 3x3/9-pixel box).
+pixel_filter_inner3x3 <- function(df_pixel){
+  df_pixel |>
+    filter(!grepl("2", pixel_pos))
 }
 
 # Regenerates THFR's raw per-matchup RHOW CSV files for every sensor_Y in a sensor family,
@@ -1675,30 +1730,36 @@ db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_t
     # sites are reinterpretations of the same underlying THFR matchups, so this stays hardcoded
     # to THFR's own QC policy regardless of site_name.
     
-    # Three further per-pixel QC gates applied here, before pixel_filter_fn()/write_matchup_csv_ne()
-    # aggregate the pixel box into one matchup value (and long before the separate day-level
-    # daily_closest_matchup() step further downstream in the main CSV pipeline): a site-specific
-    # RHOW plausibility ceiling (site_rhow_limit()) applied to both Hyp and the satellite pixel
-    # value, a per-pixel distance gate at 3x the sensor's own nominal resolution
-    # (sensor_resolution_km()), tighter than the 10 km whole-matchup dist_limit above, and a
-    # per-pixel-per-waveband negative-value gate (RHOW < 0 is optically impossible; satellite pixels
-    # commonly go negative after an over-aggressive atmospheric/glint correction, most often in the
-    # blue bands) applied to both Hyp and the satellite pixel value.
+    # Four further per-pixel QC gates in total, before write_matchup_csv_ne() aggregates the pixel
+    # box into one matchup value (and long before the separate day-level daily_closest_matchup()
+    # step further downstream in the main CSV pipeline). Three are applied here, directly on
+    # df_pixel: a site-specific RHOW plausibility ceiling (site_rhow_limit()) applied to both Hyp
+    # and the satellite pixel value, a per-pixel distance gate (TEMPORARY flat 5 km, 2026-09-04 --
+    # the resolution-based version, 2x/3x sensor_resolution_km(), turned out to eliminate
+    # essentially all MAFR matchups when applied to the real-data pipeline; reverted here too for
+    # consistency until it's properly revisited next week), and a per-pixel-per-waveband
+    # negative-value gate (RHOW < 0 is optically impossible; satellite pixels commonly go negative
+    # after an over-aggressive atmospheric/glint correction, most often in the blue bands) applied
+    # to both Hyp and the satellite pixel value. The fourth -- a site-specific minimum-valid-pixel-
+    # count per wavelength (site_pixel_min()), mirroring Hypernets_matchups' own >=6-of-9-pixels
+    # rule -- is computed just below and passed into write_matchup_csv_ne(), since it has to be
+    # evaluated per-wavelength on the pixel_filter_fn()-restricted candidate pool, not on df_pixel
+    # directly.
     sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
     rhow_limit <- site_rhow_limit("THFR")
-    pixel_dist_limit <- 3 * sensor_resolution_km(sensor_Y)
+    pixel_dist_limit <- 5
     df_pixel <- df_pixel |>
       mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
       # Filter by QC limits
              # Time limit of 15 mins for MAFR, 30 for THFR
       filter(diff_time_min <= site_diff_time_limit("THFR"),
              # Filter by RHOW limit, 0.25 for MAFR, 0.05 for THFR
-             Hyp <= rhow_limit, 
+             Hyp <= rhow_limit,
              .data[[sensor_Y]] <= rhow_limit,
              # Remove negative values
-             Hyp >= 0, 
+             Hyp >= 0,
              .data[[sensor_Y]] >= 0,
-             # Distance limit = 3 x sensor resolution
+             # Distance limit = flat 5 km (TEMPORARY, see comment above)
              dist_km_matchup <= pixel_dist_limit)
     if(nrow(df_pixel) == 0){
       message("  No matchups for ", sensor_Y, " pass the time/distance/RHOW/pixel-distance QC gate -- skipping")
@@ -1711,11 +1772,13 @@ db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_t
       next
     }
 
+    pixel_min <- site_pixel_min(site_name, sensor_Y)
+
     out_dir <- file_path_build(site_name, sensor_Y)
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
     for(mid in unique(df_filt$matchup_id)){
-      write_matchup_csv_ne(filter(df_filt, matchup_id == mid), sensor_Y, out_dir, tag = file_tag)
+      write_matchup_csv_ne(filter(df_filt, matchup_id == mid), sensor_Y, out_dir, pixel_min, tag = file_tag)
     }
   }
 }
@@ -1729,7 +1792,7 @@ db_export_matchups_poly <- function(sensor_Z, db_path = "~/pCloudDrive/Documents
   db_export_matchups_site(sensor_Z, "THFR_poly", pixel_filter_clean_water, "poly", db_path)
 }
 db_export_matchups_pixel <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
-  db_export_matchups_site(sensor_Z, "THFR_pixel", pixel_filter_none, "pixel", db_path)
+  db_export_matchups_site(sensor_Z, "THFR_pixel", pixel_filter_inner3x3, "pixel", db_path)
 }
 
 

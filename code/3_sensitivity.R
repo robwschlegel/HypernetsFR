@@ -6,10 +6,11 @@
 #
 # NB: unlike Doxaran et al. 2024 (who used a fixed 3x3-pixel-box/+-30 min window at
 # the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde),
-# this pipeline uses a PER-SENSOR distance ceiling (dist_limit = 3x sensor_resolution_km(sensor_Y),
-# e.g. 0.9 km for OLCI, 3 km for AQUA/PACE, 2.25 km for VIIRS -- a flat 10 km ceiling, raised from
+# this pipeline uses a PER-SENSOR distance ceiling (dist_limit = 2x sensor_resolution_km(sensor_Y),
+# e.g. 0.6 km for OLCI, 2 km for AQUA/PACE, 1.5 km for VIIRS -- a flat 10 km ceiling, raised from
 # 5 km on 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset (see
-# manuscript/upstream-data-bugs.md), was used until 2026-09-03) for every site, but a SITE-SPECIFIC time
+# manuscript/upstream-data-bugs.md), was used until 2026-09-03, and a 3x multiplier until
+# 2026-09-04) for every site, but a SITE-SPECIFIC time
 # window (site_diff_time_limit() in code/0_functions.R: 15 min at MAFR, 30 min at THFR).
 # This script checks both choices, and is also where the before/after comparison of
 # daily_closest_matchup() (see code/0_functions.R) lives.
@@ -35,36 +36,38 @@ matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup
                             full.names = TRUE), read_csv, show_col_types = FALSE)
 
 # Confirm nearest-pixel distances relative to the per-sensor distance ceiling.
-# NB: dist_limit is now 3x sensor_resolution_km(sensor_Y) (2026-09-03), replacing the old flat
-# 10 km ceiling (itself raised from 5 km on 2026-07-14 to accommodate a systematic pixel-extraction
-# offset in THFR PACE data -- see manuscript/upstream-data-bugs.md). For MAFR and all sensors
-# except THFR PACE, distances remain well under 1 km in practice.
+# NB: dist_limit is now 2x sensor_resolution_km(sensor_Y) (2026-09-04, tightened from 3x), replacing
+# the old flat 10 km ceiling (itself raised from 5 km on 2026-07-14 to accommodate a systematic
+# pixel-extraction offset in THFR PACE data -- see manuscript/upstream-data-bugs.md). For MAFR and
+# all sensors except THFR PACE, distances remain well under 1 km in practice.
 dist_summary <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   summarise(dist_min = min(dist, na.rm = TRUE),
             dist_median = median(dist, na.rm = TRUE),
             dist_p95 = quantile(dist, 0.95, na.rm = TRUE),
             dist_max = max(dist, na.rm = TRUE),
-            dist_limit = sensor_resolution_km(sensor_Y[1]) * 3,
+            dist_limit = sensor_resolution_km(sensor_Y[1]) * 2,
             n_over_1km = sum(dist > 1, na.rm = TRUE),
             n_over_limit = sum(dist > dist_limit, na.rm = TRUE),
             n = dplyr::n(),
             .by = c("site_name", "sensor_Y"))
 print(dist_summary)
 
-# Visualise the distance distribution per site/sensor, with the per-sensor 3x-resolution ceiling
+# Visualise the distance distribution per site/sensor, with the per-sensor 2x-resolution ceiling
 # marked (varies by facet column, since the plot already facets by sensor_Y)
 dist_limit_ref <- tibble(sensor_Y = unique(matchup_all_noQC$sensor_Y)) |>
-  mutate(dist_limit = vapply(sensor_Y, sensor_resolution_km, numeric(1)) * 3)
+  mutate(dist_limit = vapply(sensor_Y, sensor_resolution_km, numeric(1)) * 2)
 
 pl_dist <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   ggplot(aes(x = dist)) +
   geom_histogram(binwidth = 0.1) +
-  geom_vline(data = dist_limit_ref, aes(xintercept = dist_limit), colour = "red", linetype = "dashed") +
+  # geom_vline(data = dist_limit_ref, aes(xintercept = dist_limit), colour = "red", linetype = "dashed") +
+  geom_vline(data = dist_limit_ref, aes(xintercept = 5), colour = "red", linetype = "dashed") +
   labs(x = "Distance between HYPERNETS station and nearest satellite pixel (km)",
        y = "Count",
-       title = "Distance check (per-sensor 3x-resolution ceiling shown in red)") +
+      #  title = "Distance check (per-sensor 2x-resolution ceiling shown in red)") +
+       title = "Distance check (5 km shown in red)") +
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = "black"))

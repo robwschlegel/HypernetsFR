@@ -109,15 +109,15 @@ sensor_Y_thfr <- db_satellite_names
 # ("THFR") plus the matching dist_km_matchup <= 10 ceiling, PLUS the same
 # per-pixel gates added there (2026-09-03): a site-specific RHOW plausibility
 # ceiling (site_rhow_limit()) on both Hyp and the satellite pixel value, a
-# per-pixel distance gate at 3x the sensor's own nominal resolution
-# (sensor_resolution_km()), and a per-pixel-per-waveband negative-value gate on
+# per-pixel distance gate at 2x the sensor's own nominal resolution (tightened
+# from 3x on 2026-09-04, sensor_resolution_km()), and a per-pixel-per-waveband negative-value gate on
 # both Hyp and the satellite pixel value -- once, here, so every downstream
 # analysis in this script inherits it automatically. Every db_matchup_pixels()
 # call below goes through this wrapper instead.
 db_matchup_pixels_qc <- function(db_path, sensor_Y){
   sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
   rhow_limit <- site_rhow_limit("THFR")
-  pixel_dist_limit <- 3 * sensor_resolution_km(sensor_Y)
+  pixel_dist_limit <- 2 * sensor_resolution_km(sensor_Y)
   db_matchup_pixels(db_path, sensor_Y) |>
     mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
     filter(diff_time_min <= site_diff_time_limit("THFR"), dist_km_matchup <= 10,

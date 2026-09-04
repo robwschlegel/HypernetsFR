@@ -5,6 +5,8 @@
 # Setup -------------------------------------------------------------------
 
 source("code/0_functions.R")
+library(maptiles)  # IGN orthophoto tile basemap for Figure 1
+library(tidyterra)  # geom_spatraster_rgb() for Figure 1
 
 # For tailor diagrams
 # library(openair)
@@ -38,27 +40,148 @@ if (!interactive()) quit(save = "no", status = 0)
 
 
 # Figure 1 ---------------------------------------------------------------
+# Two 5x5 km panels (MAFR, THFR) on an IGN orthophoto basemap: red X = true
+# station position (db-derived mean per-scan GPS), coloured dots = each
+# satellite's mean position per pixel_pos across its inner 3x3 pixel grid.
+# No QC filtering is applied here -- this map shows where pixels were
+# measured, not whether they passed quality gates, so meta/pixel_positions.csv
+# is built from db_matchup_pixels()'s raw output. Heavy per-pixel db querying
+# is cached once to that file -- delete it to force a full recompute (which
+# also refreshes meta/station_in_situ.csv, a byproduct of the same pass).
 
-station_in_situ <- read_csv("meta/station_in_situ.csv")
+# IGN Geoportail aerial orthophoto tile provider + retry wrapper -- same
+# pattern as meta/pixel_explore.R, with its own (gitignored) cache directory
+# since Figure 1 is a production figure, not throwaway exploration.
+ign_ortho <- create_provider(
+  name = "IGN.Orthophotos",
+  url = "https://data.geopf.fr/wmts?LAYER=ORTHOIMAGERY.ORTHOPHOTOS&EXCEPTIONS=text/xml&FORMAT=image/jpeg&SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+  citation = "IGN-F/Geoportail"
+)
+fig1_cachedir <- "meta/fig1_tile_cache"
+dir.create(fig1_cachedir, showWarnings = FALSE, recursive = TRUE)
 
-map_france <- map_data("world", region = "France")
+get_tiles_retry <- function(..., max_tries = 4, pause_sec = 3){
+  for(i in seq_len(max_tries)){
+    result <- tryCatch(get_tiles(..., cachedir = fig1_cachedir), error = function(e) e)
+    if(!inherits(result, "error")) return(result)
+    message("get_tiles() attempt ", i, " failed (", conditionMessage(result), "), retrying...")
+    Sys.sleep(pause_sec)
+  }
+  message("get_tiles() still failing after ", max_tries, " attempts, forcing a fresh download...")
+  get_tiles(..., cachedir = fig1_cachedir, forceDownload = TRUE)
+}
 
-pl_map <- ggplot() +
-  geom_polygon(data = map_france, aes(x = long, y = lat, group = group),
-               fill = "grey80", colour = "grey40", linewidth = 0.3) +
-  geom_point(data = station_in_situ, aes(x = lon, y = lat, colour = site),
-             size = 4) +
-  geom_label(data = station_in_situ, aes(x = lon, y = lat, label = site),
-             nudge_y = 0.6, size = 4) +
-  scale_colour_brewer(palette = "Set1") +
-  labs(x = "Longitude (°E)", y = "Latitude (°N)", colour = "Site") +
-  coord_quickmap(xlim = c(-5, 10), ylim = c(41, 52)) +
-  theme(panel.border = element_rect(colour = "black", fill = NA),
-        legend.position = "right",
-        axis.title = element_text(size = 14),
-        axis.text = element_text(size = 12))
+# One-time db query + aggregation, cached to meta/pixel_positions.csv -------
+pixel_positions_path <- "meta/pixel_positions.csv"
+
+if(file.exists(pixel_positions_path)){
+  message("Reading cached per-pixel satellite positions from ", pixel_positions_path)
+  pixel_positions <- read_csv(pixel_positions_path, show_col_types = FALSE)
+} else {
+  message("No cache found at ", pixel_positions_path, " -- querying the .db files for Figure 1 (may take a while)...")
+
+  site_db_paths <- list(
+    MAFR = c("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2024.db",
+             "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2025.db"),
+    THFR = c("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db")
+  )
+
+  # Pull every (site, sensor_Y, db_path)'s raw per-pixel matchups exactly once
+  # -- meta/station_in_situ.csv's centroid and pixel_positions.csv's per-pixel
+  # averages are both derived below from this one in-memory result, so the
+  # .db files are hit only once per cache-miss run. No QC filtering: every
+  # matched Hyp/satellite pair the db has is included.
+  pixels_all <- tibble()
+  for(site_name_i in names(site_db_paths)){
+    for(db_path_i in site_db_paths[[site_name_i]]){
+      for(sY in db_satellite_names){
+        message("  ", site_name_i, " / ", basename(db_path_i), " / ", sY)
+        df_i <- tryCatch(db_matchup_pixels(db_path_i, sY),
+                          warning = function(w){ message("    ", conditionMessage(w)); tibble() },
+                          error = function(e){ message("    ", conditionMessage(e)); tibble() })
+        pixels_all <- bind_rows(pixels_all, df_i)
+      }
+    }
+  }
+
+  # Station centroid: mean per-scan GPS position (lon_Hyp/lat_Hyp) across
+  # every matchup, pooled across sensors and (for MAFR) both db files --
+  # overwrites the previously stale, hand-entered meta/station_in_situ.csv
+  station_in_situ <- pixels_all |>
+    distinct(site_name, matchup_id, lon_Hyp, lat_Hyp) |>
+    summarise(lon = mean(lon_Hyp, na.rm = TRUE), lat = mean(lat_Hyp, na.rm = TRUE), .by = site_name) |>
+    dplyr::rename(site = site_name) |>
+    arrange(site)
+  write_csv(station_in_situ, "meta/station_in_situ.csv")
+
+  # Per-satellite mean pixel position: average pixel_lon/pixel_lat per
+  # (site, sensor_Y, pixel_pos), restricted to the inner 3x3 grid -- the box
+  # size the production pipeline actually exports (see
+  # pixel_filter_ne_inner3x3(), code/0_functions.R)
+  pixel_positions <- pixels_all |>
+    filter(!grepl("2", pixel_pos)) |>
+    summarise(pixel_lon = mean(pixel_lon, na.rm = TRUE),
+              pixel_lat = mean(pixel_lat, na.rm = TRUE),
+              n_matchups = n_distinct(matchup_id),
+              .by = c(site_name, sensor_Y, pixel_pos))
+  write_csv(pixel_positions, pixel_positions_path)
+}
+
+station_in_situ <- read_csv("meta/station_in_situ.csv", show_col_types = FALSE)
+
+# 5x5 km bbox around a station, built in a metric CRS (EPSG:2154, RGF93 /
+# Lambert-93 -- low-distortion across all of mainland France, so one CRS
+# choice covers both MAFR's Atlantic coast and THFR's Mediterranean coast
+# without a UTM-zone mismatch) so the panel is a true 5x5 km square, not a
+# fixed-degree box distorted by MAFR (45.5N) vs THFR (43.4N)'s differing
+# degrees-per-km.
+site_bbox_sf <- function(lon, lat, half_width_m = 2500, crs_metric = 2154){
+  pt_m <- st_sfc(st_point(c(lon, lat)), crs = 4326) |> st_transform(crs_metric)
+  xy <- st_coordinates(pt_m)
+  bbox_m <- st_bbox(c(xmin = xy[1] - half_width_m, xmax = xy[1] + half_width_m,
+                       ymin = xy[2] - half_width_m, ymax = xy[2] + half_width_m),
+                     crs = crs_metric)
+  st_as_sfc(bbox_m) |> st_transform(4326) |> st_sf()
+}
+
+# Fixed sensor colour palette (shared across both panels so patchwork's
+# guides = "collect" merges one consistent legend, rather than each panel
+# showing only the sensors actually present at that site)
+sensor_colours <- setNames(RColorBrewer::brewer.pal(length(db_satellite_names), "Set1"), db_satellite_names)
+pixel_positions <- pixel_positions |> mutate(sensor_Y = factor(sensor_Y, levels = db_satellite_names))
+
+fig1_panel <- function(site_name_i, tile_zoom = 16){
+  station_row <- station_in_situ |> dplyr::filter(site == site_name_i)
+  bbox_i <- site_bbox_sf(station_row$lon, station_row$lat)
+  tile_i <- get_tiles_retry(bbox_i, provider = ign_ortho, crop = TRUE, zoom = tile_zoom)
+  pixels_i <- pixel_positions |> dplyr::filter(site_name == site_name_i)
+
+  # Clip the panel to the tile's own extent, not the union of all plotted
+  # layers -- otherwise a single stray pixel_lon/pixel_lat (no QC filtering
+  # is applied upstream, see comments above) pulls the panel bounds well
+  # outside the intended 5x5 km view, leaving blank space around the tile.
+  ext_i <- terra::ext(tile_i)
+
+  ggplot() +
+    geom_spatraster_rgb(data = tile_i) +
+    geom_point(data = pixels_i, aes(x = pixel_lon, y = pixel_lat, colour = sensor_Y),
+               size = 3, alpha = 0.85) +
+    geom_point(aes(x = station_row$lon, y = station_row$lat),
+               colour = "red", shape = 4, size = 4, stroke = 2) +
+    scale_colour_manual(values = sensor_colours, name = "Satellite", drop = FALSE) +
+    coord_sf(xlim = c(ext_i[1], ext_i[2]), ylim = c(ext_i[3], ext_i[4]),
+             crs = st_crs(tile_i), expand = FALSE) +
+    labs(title = site_name_i, x = NULL, y = NULL) +
+    theme_bw() +
+    theme(legend.position = "bottom")
+}
+
+pl_map <- wrap_plots(fig1_panel("MAFR"), fig1_panel("THFR"), ncol = 2) +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "a", tag_suffix = ")") &
+  theme(legend.position = "bottom")
 # pl_map
-ggsave("figures/fig_1.png", pl_map, height = 10, width = 8)
+ggsave("figures/fig_1.png", pl_map, height = 7, width = 14)
 
 
 # Figure 3 ----------------------------------------------------------------
