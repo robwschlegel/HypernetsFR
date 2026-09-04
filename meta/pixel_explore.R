@@ -150,7 +150,7 @@ pixel_bearing_quadrant <- function(df){
 # Station coordinate sanity check --------------------------------------------
 # One-off diagnostic: does the fixed meta/station_in_situ.csv THFR coordinate
 # agree with the actual per-scan HYPERNETS GPS logged in the db? A large,
-# consistent offset here could itself be feeding into Bug 9 (THFR PACE pixel
+# consistent offset here could itself be feeding into Bug 7 (THFR PACE pixel
 # extraction offset, see manuscript/upstream-data-bugs.md) if the same fixed
 # coordinate is what Hypernets_matchups queries against upstream.
 

@@ -280,22 +280,24 @@ df_matchups_global_pretty <- df_matchups_global |>
                                                      "PACE", "JPSS2", "JPSS1", "SNPP")),
          sensor_sat = factor(sensor_sat, levels = c("MODIS", "OLCI", "OCI", "VIIRS")),
          # NB: site_name is kept (not filtered/dropped) so the matrix below can facet by it --
-         # previously it was silently ignored here, meaning MAFR/THFR/THFR_NE/THFR_poly rows for
-         # the same sensor/waveband (which have very different Error_50, e.g. up to 1600% at THFR
-         # vs ~140% at MAFR) were averaged/overplotted together. See manuscript/track-changes.md.
-         site_name = factor(site_name, levels = c("MAFR", "THFR", "THFR_NE", "THFR_poly")))
+         # previously it was silently ignored here, meaning MAFR/THFR/THFR_NE/THFR_poly/THFR_pixel
+         # rows for the same sensor/waveband (which have very different Error_50, e.g. up to 1600%
+         # at THFR vs ~140% at MAFR) were averaged/overplotted together. See manuscript/track-changes.md.
+         site_name = factor(site_name, levels = c("MAFR", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel")))
 
 # Matrix plot
 plot_matrix_error <- function(df, val_range) {
-  # PACE's waveband buckets run all the way to 1050nm even though the current matchup data
-  # happens to top out around 718nm -- complete() adds a blank/NA row for any canonical bucket
-  # with zero underlying observations at any site, so it still gets its own (grey) column
-  # instead of silently disappearing
-  if(unique(df$sensor_sat) == "OCI"){
-    df <- df |>
-      tidyr::complete(wavelength_clean = names(colour_nm_func("PACE")),
-                       tidyr::nesting(sensor_Y, sensor_sat), site_name)
-  }
+  # complete() adds a blank/NA row for any (sensor_Y, waveband) combination with zero underlying
+  # observations at a given site, so it still gets its own (grey) column instead of silently
+  # disappearing from that site's facet panel -- e.g. THFR/JPSS2, where every matchup fails the
+  # CV outlier gate (see Bug 11, manuscript/upstream-data-bugs.md), previously vanished from the
+  # VIIRS panel's y-axis entirely rather than showing as a blank row. PACE's waveband buckets run
+  # all the way to 1050nm even though the current matchup data happens to top out around 718nm, so
+  # OCI needs the canonical bucket list rather than the wavebands actually observed in df.
+  wavelength_levels <- if(unique(df$sensor_sat) == "OCI") names(colour_nm_func("PACE")) else unique(df$wavelength_clean)
+  df <- df |>
+    tidyr::complete(wavelength_clean = wavelength_levels,
+                     tidyr::nesting(sensor_Y, sensor_sat), site_name)
 
   df_all <- df |>
     group_by(sensor_Y, sensor_sat, site_name) |>
@@ -330,8 +332,8 @@ plot_matrix_error <- function(df, val_range) {
 # NB: val_range is fixed and shared across all four sensor-family panels (not computed per
 # family/site) because plot_layout(guides = "collect") below requires one common fill scale to
 # merge the legends correctly. Raised from the previous c(0, 40): MAFR's real Error_50 range
-# (~7-140%) is now well resolved, while THFR/THFR_NE/THFR_poly's much heavier tail (up to ~1600%)
-# still clips at the cap colour -- intended, so a few extreme outliers don't wash out the scale.
+# (~7-140%) is now well resolved, while THFR/THFR_NE/THFR_poly/THFR_pixel's much heavier tail (up
+# to ~1600%) still clips at the cap colour -- intended, so a few extreme outliers don't wash out the scale.
 sensors <- c("MODIS", "VIIRS", "OLCI", "OCI")
 plots_by_sensor <- purrr::set_names(
   purrr::map(sensors, function(s) {
@@ -352,7 +354,8 @@ ggsave("figures/fig_11.png", fig_11, width = 34, height = 9)
 
 # Barplot of PACE OCI Error and Bias across all wavelengths (HYPERNETS vs PACE at MAFR)
 global_stats_OCI <- read_csv("output/global_stats_RHOW_OCI.csv", show_col_types = FALSE) |>
-  filter(sensor_X == "HYPERNETS", sensor_Y == "PACE")
+  filter(sensor_X == "HYPERNETS", sensor_Y == "PACE") |> 
+  filter(site_name %in% c("MAFR", "THFR_pixel"))
 
 theme_S1 <- theme(panel.border  = element_rect(fill = NA, color = "black"),
                   axis.title.x  = element_markdown(size = 12),
@@ -360,12 +363,12 @@ theme_S1 <- theme(panel.border  = element_rect(fill = NA, color = "black"),
                   axis.text     = element_text(size = 10))
 
 pl_Error_OCI <- ggplot(global_stats_OCI, aes(x = wavelength, y = Error_50)) +
-  geom_col(fill = "steelblue") +
+  geom_col(aes(fill = site_name)) +
   labs(x = "Wavelength (nm)", y = "Error (%)") +
   theme_S1
 
 pl_Bias_OCI <- ggplot(global_stats_OCI, aes(x = wavelength, y = Bias_50)) +
-  geom_col(fill = "steelblue") +
+  geom_col(aes(fill = site_name)) +
   geom_hline(yintercept = 0, linewidth = 0.4) +
   labs(x = "Wavelength (nm)", y = "Bias (%)") +
   theme_S1

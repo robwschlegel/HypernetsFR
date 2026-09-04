@@ -353,13 +353,13 @@ sat_var_check <- function(file_name, cv_limit = 30){
 # to MAFR, see Doxaran et al. 2024's analogous Berre lagoon vs Gironde Estuary contrast)
 # are both present on disk as of 2026-07-14. Additional sites are picked up automatically
 # the moment their data folder exists on disk. 
-# THFR_NE (added 2026-08-28) and THFR_poly (added 2026-08-28) are independent derived sites
-# alongside MAFR/THFR -- NE-quadrant and clean-water-polygon-filtered THFR re-analyses
-# respectively (see the TEMPORARY section in this file and meta/pixel_explore.R), each
-# intentionally kept as its own site for direct comparison rather than replacing THFR anywhere
-# in the pipeline.
+# THFR_NE (added 2026-08-28), THFR_poly (added 2026-08-28), and THFR_pixel (added 2026-09-03) are
+# independent derived sites alongside MAFR/THFR -- NE-quadrant, clean-water-polygon-filtered, and
+# no-spatial-filter (per-pixel-QC-only) THFR re-analyses respectively (see the TEMPORARY section in
+# this file and meta/pixel_explore.R), each intentionally kept as its own site for direct
+# comparison rather than replacing THFR anywhere in the pipeline.
 available_sites <- function(sat_name){
-  candidate_sites <- c("MAFR", "THFR", "THFR_NE", "THFR_poly")
+  candidate_sites <- c("MAFR", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel")
   site_present <- vapply(candidate_sites, function(s) dir.exists(file_path_build(s, sat_name)), logical(1))
   sites_found <- candidate_sites[site_present]
   if(length(sites_found) == 0) stop(paste0("No site data found on disk for sensor: ", sat_name))
@@ -1638,6 +1638,13 @@ pixel_filter_clean_water <- function(df_pixel){
   df_pixel[lengths(sf::st_within(pts, clean_water_sf)) > 0, ]
 }
 
+# No spatial restriction at all -- keeps every pixel that already passed the per-pixel QC gates in
+# db_export_matchups_site() (RHOW ceiling, negative-value, per-pixel distance). Isolates the effect
+# of that QC from the spatial filters used by THFR_NE/THFR_poly.
+pixel_filter_none <- function(df_pixel){
+  df_pixel
+}
+
 # Regenerates THFR's raw per-matchup RHOW CSV files for every sensor_Y in a sensor family,
 # restricted to whichever pixels pixel_filter_fn keeps, and written under a new site folder
 # named site_name (isolated from the real THFR/MAFR data). See the section comment above for full
@@ -1720,6 +1727,9 @@ db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/O
 }
 db_export_matchups_poly <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
   db_export_matchups_site(sensor_Z, "THFR_poly", pixel_filter_clean_water, "poly", db_path)
+}
+db_export_matchups_pixel <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  db_export_matchups_site(sensor_Z, "THFR_pixel", pixel_filter_none, "pixel", db_path)
 }
 
 
@@ -2284,18 +2294,30 @@ global_scatterplot_waveband <- function(sensor_Z){
 
   # Per-(waveband, site) stats, combined into one newline-joined label per waveband so each
   # facet panel gets a single compact text block instead of one box per site
-  site_levels <- c("MAFR", "THFR", "THFR_NE", "THFR_poly")
+  site_levels <- c("MAFR", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel")
   df_axis <- match_all |>
     group_by(waveband_label) |>
     summarise(max_axis = max(c(Hyp, Sat), na.rm = TRUE), .groups = "drop")
+
+  # Distinct satellite overpass days per (waveband, site) -- same date-extraction convention as
+  # plot_global_nm()'s parenthetical day count, computed before base_stats()'s NA/positive-value
+  # filtering (i.e. counts distinct days contributing a matchup, not distinct valid point pairs)
+  df_days <- match_all |>
+    dplyr::select(waveband_label, site_name, file_name) |>
+    mutate(date = sapply(str_split(file_name, "_"), "[[", 2),
+           date = sapply(str_split(date, "T"), "[[", 1),
+           date = as.Date(date, format = "%Y%m%d")) |>
+    distinct(waveband_label, site_name, date) |>
+    count(waveband_label, site_name, name = "n_days")
 
   df_stats <- match_all |>
     group_by(waveband_label, site_name) |>
     group_modify(~ base_stats(.x$Hyp, .x$Sat)) |>
     ungroup() |>
+    left_join(df_days, by = c("waveband_label", "site_name")) |>
     mutate(site_name = factor(site_name, levels = site_levels)) |>
     arrange(waveband_label, site_name) |>
-    mutate(site_label = paste0(site_name, ": n=", n, ", S=", sprintf("%.2f", Slope_II),
+    mutate(site_label = paste0(site_name, ": n=", n, " (", n_days, ")", ", S=", sprintf("%.2f", Slope_II),
                                ", β=", sprintf("%.1f", Bias_50), "%, ε=", sprintf("%.1f", Error_50), "%")) |>
     group_by(waveband_label) |>
     summarise(label = paste(site_label, collapse = "\n"), .groups = "drop") |>
@@ -2315,7 +2337,7 @@ global_scatterplot_waveband <- function(sensor_Z){
     geom_text(data = df_stats, aes(label = label, y = max_axis), x = 0,
               hjust = 0, vjust = 1, size = 2.5, inherit.aes = FALSE) +
     facet_wrap(~waveband_label, scales = "free") +
-    scale_shape_manual(values = c(MAFR = 16, THFR = 17, THFR_NE = 15, THFR_poly = 3), drop = TRUE) +
+    scale_shape_manual(values = c(MAFR = 16, THFR = 17, THFR_NE = 15, THFR_poly = 3, THFR_pixel = 4), drop = TRUE) +
     scale_colour_brewer(palette = "Set1", drop = TRUE) +
     ggh4x::facetted_pos_scales(x = pos_scales_x, y = pos_scales_y) +
     labs(x = paste0("HYPERNETS; ", var_labs$units_lab),
