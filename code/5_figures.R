@@ -161,6 +161,41 @@ fig1_panel <- function(site_name_i, tile_zoom = 16){
   # is applied upstream, see comments above) pulls the panel bounds well
   # outside the intended 5x5 km view, leaving blank space around the tile.
   ext_i <- terra::ext(tile_i)
+  x_min <- ext_i[1]; x_max <- ext_i[2]; y_min <- ext_i[3]; y_max <- ext_i[4]
+
+  # Scale bar (0-1-2 km) and north arrow -----------------------------------
+  # The panels are drawn in geographic coordinates (EPSG:4326), so both
+  # annotations are laid out in degrees converted from metres at the panel's
+  # centre latitude via geosphere::destPoint(). Converting the two axes
+  # separately keeps the bar a true 1 and 2 km on the ground and the arrow
+  # visually symmetric, despite a degree of longitude and a degree of
+  # latitude covering different distances.
+  lat_mid <- (y_min + y_max) / 2
+  km_lon <- destPoint(c(x_min, lat_mid), b = 90, d = 1000)[1] - x_min
+  km_lat <- destPoint(c(x_min, lat_mid), b = 0, d = 1000)[2] - lat_mid
+
+  bar_x <- x_min + 0.06 * (x_max - x_min)
+  bar_y <- y_min + 0.045 * (y_max - y_min)
+  bar_h <- 0.09 * km_lat
+  bar_df <- tibble(xmin = bar_x + c(0, km_lon), xmax = bar_x + c(km_lon, 2 * km_lon),
+                   ymin = bar_y, ymax = bar_y + bar_h, bar_fill = c("black", "white"))
+  bar_lab <- tibble(x = bar_x + c(0, km_lon, 2 * km_lon), y = bar_y + bar_h,
+                    label = c("0", "1", "2 km"))
+
+  # Arrow anchored in the top-right corner, drawn as a filled chevron (a
+  # notched triangle) so it stays legible against a busy orthophoto
+  arr_x <- x_max - 0.07 * (x_max - x_min)
+  arr_y <- y_max - 0.16 * (y_max - y_min)
+  arr_df <- tibble(x = arr_x + c(0, -0.16, 0, 0.16) * km_lon,
+                   y = arr_y + c(0.60, 0, 0.14, 0) * km_lat)
+
+  # Tight semi-transparent white backings so the black bar, its labels and the
+  # arrow stay readable over dark water or dark saltmarsh
+  bg_bar <- tibble(xmin = bar_x - 0.16 * km_lon, xmax = bar_x + 2.40 * km_lon,
+                   ymin = bar_y - 0.09 * km_lat, ymax = bar_y + 0.42 * km_lat)
+  bg_arr <- tibble(xmin = arr_x - 0.26 * km_lon, xmax = arr_x + 0.26 * km_lon,
+                   ymin = arr_y - 0.09 * km_lat, ymax = arr_y + 1.05 * km_lat)
+  bg_df <- bind_rows(bg_bar, bg_arr)
 
   ggplot() +
     geom_spatraster_rgb(data = tile_i) +
@@ -168,8 +203,19 @@ fig1_panel <- function(site_name_i, tile_zoom = 16){
                size = 3, alpha = 0.85) +
     geom_point(aes(x = station_row$lon, y = station_row$lat),
                colour = "red", shape = 4, size = 4, stroke = 2) +
+    geom_rect(data = bg_df, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+              fill = "white", alpha = 0.6, colour = NA, inherit.aes = FALSE) +
+    geom_rect(data = bar_df, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = bar_fill),
+              colour = "black", linewidth = 0.3, inherit.aes = FALSE) +
+    geom_text(data = bar_lab, aes(x = x, y = y, label = label),
+              vjust = -0.30, size = 2.6, colour = "black", inherit.aes = FALSE) +
+    geom_polygon(data = arr_df, aes(x = x, y = y),
+                 fill = "black", colour = "black", linewidth = 0.3, inherit.aes = FALSE) +
+    geom_text(aes(x = arr_x, y = arr_y + 0.60 * km_lat), label = "N",
+              vjust = -0.15, size = 2.6, fontface = "bold", colour = "black") +
+    scale_fill_identity() +
     scale_colour_manual(values = sensor_colours, name = "Satellite", drop = FALSE) +
-    coord_sf(xlim = c(ext_i[1], ext_i[2]), ylim = c(ext_i[3], ext_i[4]),
+    coord_sf(xlim = c(x_min, x_max), ylim = c(y_min, y_max),
              crs = st_crs(tile_i), expand = FALSE) +
     labs(title = site_name_i, x = NULL, y = NULL) +
     theme_bw() +
