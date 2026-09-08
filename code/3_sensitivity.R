@@ -113,24 +113,51 @@ print(time_trend_test)
 
 # Daily closest-match sensitivity (site-specific time window) -----------------------
 
-# Compare global_stats(..., daily_average = FALSE) (every QC-passed matchup treated as an
-# independent data point) against global_stats(..., daily_average = TRUE) (daily_closest_matchup():
+# Compare global_stats_impl(..., select_daily = FALSE) (every QC-passed matchup treated as an
+# independent data point) against global_stats_impl(..., select_daily = TRUE) (daily_closest_matchup():
 # only the single closest-in-time matchup per day is kept, see code/0_functions.R) here, per site
-# and sensor family, to quantify how much day-level collapsing changes the headline Error/Bias
+# and sensor family, to quantify how much day-level selection changes the headline Error/Bias
 # values, and to check whether it meaningfully addresses the "not all matchups are independent of
-# one another" caveat raised in the Tara "in review" paper's Conclusion.
-#
+# one another" caveat raised in the Tara "in review" paper's Conclusion. select_daily = FALSE is
+# NOT the old daily_average_matchups() (removed 2026-09-03, it genuinely averaged same-day
+# matchups) -- it is simply "no day-level selection at all", the only two states that still exist.
 compare_daily_avg <- function(site_name, sensor_Y){
-  no_avg <- global_stats(site_name, sensor_Y, daily_average = FALSE) |> mutate(daily_average = FALSE)
-  avg    <- global_stats(site_name, sensor_Y, daily_average = TRUE)  |> mutate(daily_average = TRUE)
-  bind_rows(no_avg, avg)
+  no_sel <- global_stats_impl(site_name, sensor_Y, select_daily = FALSE) |> mutate(daily_selected = FALSE)
+  sel    <- global_stats_impl(site_name, sensor_Y, select_daily = TRUE)  |> mutate(daily_selected = TRUE)
+  bind_rows(no_sel, sel)
 }
 daily_avg_comparison <- purrr::pmap_dfr(sensor_grid("OLCI"), compare_daily_avg)
 pl_daily_avg <- daily_avg_comparison |>
   filter(sensor_X == "HYPERNETS") |>
-  ggplot(aes(x = wavelength, y = Error_50, colour = daily_average, size = n_w_nm_clean)) +
+  ggplot(aes(x = wavelength, y = Error_50, colour = daily_selected, size = n_w_nm_clean)) +
   geom_point() +
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
   labs(title = "Effect of daily closest-match selection on Error (%) per wavelength", size = "Unique \n data points")
 ggsave("figures/sensitivity_daily_average.png", pl_daily_avg, width = 12, height = 8)
 
+
+# Vlidation Hypernets_matchups vs direct .db -----------------------------
+
+# Validates the from-scratch derived-site matchup CSVs (THFR_NE/THFR_poly/THFR_pixel/THFR_raw,
+# written by db_export_matchups_ne()/_poly()/_pixel()/_thfr_raw() -> write_matchup_csv_db() in
+# code/0_functions.R; MAFR_pixel/MAFR_raw likewise via db_export_matchups_mafr_pixel()/_mafr_raw())
+# against the real Hypernets_matchups THFR/MAFR files for the same matchup timestamps, since these
+# derived sites are reinterpretations of the same underlying THFR/MAFR matchups and a real file
+# exists for many of them. The real tool's own box-averaging/variability_centered formula is
+# undocumented anywhere, so this is the only available ground-truth check on
+# write_matchup_csv_db()'s reconstructed Hyp/satellite band values -- THFR_raw/MAFR_raw in
+# particular are the check that decides whether MAFR/THFR themselves can safely be retargeted onto
+# .db-native data (see the "TEMPORARY: derived THFR/MAFR matchup sites" section of
+# code/1_matchups_single.R).
+#
+# This script is intended to be run AFTER 1_matchups_single.R (needs the derived-site CSVs it
+# writes) and is read by no other script, so it can safely be skipped in a quick production run.
+# Purely diagnostic: writes meta/validate_<site>.csv and prints a per-sensor summary of percent
+# differences, but does not block or alter the main pipeline.
+
+validate_derived_site("THFR_NE", tag = "NE")
+validate_derived_site("THFR_poly", tag = "poly")
+validate_derived_site("THFR_pixel", tag = "pixel")
+validate_derived_site("MAFR_pixel", tag = "pixel", real_site_name = "MAFR")
+validate_derived_site("THFR_raw", tag = "raw")
+validate_derived_site("MAFR_raw", tag = "raw", real_site_name = "MAFR")

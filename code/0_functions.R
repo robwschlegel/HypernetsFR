@@ -919,7 +919,16 @@ process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_
 # site_name = "MAFR"; sensor_Y = "SNPP"
 # site_name = "MAFR"; sensor_Y = "JPSS1"
 # site_name = "MAFR"; sensor_Y = "AQUA"
-global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
+#
+# select_daily controls whether daily_closest_matchup() collapses same-day matchups to the single
+# closest-in-time one (the only behaviour global_stats() itself ever uses, see its thin wrapper
+# below) or leaves every QC-passed matchup as an independent point. Kept as a private toggle on
+# this impl function -- not on global_stats()'s own public signature -- purely so
+# code/3_sensitivity.R's before/after comparison can still get the "before" (no selection) state
+# without a stale daily_average-style parameter re-appearing on the production entry point. There
+# is no longer any averaging behind either setting: "select_daily = FALSE" was never
+# daily_average_matchups() (removed 2026-09-03), it is simply "no day-level selection at all".
+global_stats_impl <- function(site_name, sensor_Y, select_daily = TRUE){
   
   # Create multiple folder paths if requested
   if(sensor_Y == "S3_all"){
@@ -1007,8 +1016,10 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
   # Attach diff_time/dist (per file_name) needed by daily_closest_matchup() below
   match_base_filt <- match_base_filt |> left_join(match_base_details, by = "file_name")
 
-  # Optional day-level collapsing: keep only the single closest-in-time matchup per day
-  if(daily_average){
+  # Day-level collapsing: keep only the single closest-in-time matchup per day. See select_daily's
+  # own docstring above -- global_stats() itself always wants this; only the sensitivity comparison
+  # ever asks for the un-collapsed alternative.
+  if(select_daily){
     match_base_filt <- daily_closest_matchup(match_base_filt, site_name)
   }
 
@@ -1022,6 +1033,12 @@ global_stats <- function(site_name, sensor_Y, daily_average = TRUE){
            .before = "n_w_nm") |>
     dplyr::select(site_name, sensor_X, sensor_Y, wavelength, everything())
   return(df_results)
+}
+
+# Public entry point: always the single closest-in-time matchup per day (daily_closest_matchup()).
+# There is no averaging option any more -- see global_stats_impl()'s select_daily docstring.
+global_stats <- function(site_name, sensor_Y){
+  global_stats_impl(site_name, sensor_Y, select_daily = TRUE)
 }
 
 # Function that runs this over all matchup files in a directory
@@ -1061,7 +1078,7 @@ process_matchup_folder <- function(site_name, sensor_Y){
 # Process multiple folders based on request
 # sensor_Z = "MODIS"; stat_choice = "matchup"
 # sensor_Z = "OLCI"; stat_choice = "global"
-process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TRUE){
+process_sensor <- function(sensor_Z, stat_choice = "matchup"){
   
   # Create ply grid
   ply_grid <- sensor_grid(sensor_Z)
@@ -1095,7 +1112,7 @@ process_sensor <- function(sensor_Z, stat_choice = "matchup", daily_average = TR
     proc_res_unclean <- proc_res[!proc_res$file_name %in% proc_res_clean$file_name,]
     write_csv(proc_res_unclean, paste0("output/matchup_noQC_stats_RHOW_",sensor_Z,".csv"))
   } else {
-    proc_res <- furrr::future_pmap_dfr(ply_grid, global_stats, daily_average = daily_average, .options = furrr_options(seed = TRUE))
+    proc_res <- furrr::future_pmap_dfr(ply_grid, global_stats, .options = furrr_options(seed = TRUE))
     write_csv(proc_res, paste0("output/global_stats_RHOW_",sensor_Z,".csv"))
   }
 }
