@@ -62,3 +62,10 @@ rsconnect/
 
 ## Pycache
 meta/__pycache__/
+
+# Regenerable QC/validation audit outputs -- large (tens of MB each), fully reproducible from the
+# local .db files by re-running code/1_matchups_single.R / code/3_sensitivity.R, not needed by
+# anyone who hasn't already got those .db files locally. See CLAUDE.md's "Known repo-specific
+# gotchas" for why these were removed from version control on 2026-09-08.
+meta/*_pixel_removals.csv
+meta/validate_*.csv

@@ -452,7 +452,12 @@ df_matchups_global_pretty <- df_matchups_global |>
          # previously it was silently ignored here, meaning MAFR/THFR/THFR_NE/THFR_poly/THFR_pixel
          # rows for the same sensor/waveband (which have very different Error_50, e.g. up to 1600%
          # at THFR vs ~140% at MAFR) were averaged/overplotted together. See manuscript/track-changes.md.
-         site_name = factor(site_name, levels = c("MAFR", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel")))
+         # An explicit factor(levels=) silently NAs out (and drops from the facet) any site_name not
+         # listed here -- caught 2026-09-08 when MAFR_pixel/THFR_raw/MAFR_raw (added 2026-09-07) were
+         # missing from this list despite already being in available_sites(); keep this in sync with
+         # available_sites()'s candidate_sites whenever a new derived site is added.
+         site_name = factor(site_name, levels = c("MAFR", "MAFR_pixel", "MAFR_raw",
+                                                   "THFR", "THFR_NE", "THFR_poly", "THFR_pixel", "THFR_raw")))
 
 # Matrix plot
 plot_matrix_error <- function(df, val_range) {

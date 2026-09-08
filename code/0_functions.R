@@ -17,9 +17,8 @@ library(ggimage) # For adding .jpg files to figures
 library(patchwork) # For complex paneling of figures
 library(future)
 library(furrr)
-library(ggh4x) # For independent per-facet axis limits (facetted_pos_scales()) alongside a true
-                # 1:1 x/y aspect ratio per panel -- see plot_global_nm())
-library(sf) # For the clean_water_sf point-in-polygon pixel filter -- see db_export_matchups_site()
+library(ggh4x) # For independent per-facet axis limits
+library(sf) # For the clean_water_sf point-in-polygon pixel filter
 
 
 # Setup -------------------------------------------------------------------
@@ -90,9 +89,6 @@ path_site_name <- function(path){
 }
 
 # Load a single matchup file and create mean values from all replicates
-# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_JPSS1/JPSS1_20240531T120600_vs_HYPERNETS_20240531T114500_RHOW_C.csv"
-# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_SNPP/SNPP_20240611T131200_vs_HYPERNETS_20240611T124500_RHOW_C.csv"
-# file_name <- file_path
 load_matchup_mean <- function(file_name){
   
   # message(paste0("Started loading : ", file_name))
@@ -142,10 +138,6 @@ load_matchup_mean <- function(file_name){
 }
 
 # Load a single matchup file directly into long format
-# file_name <- file.path(folder_path, file_uniq_list$file_name)[1]
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_S3A/S3A_20240531T101658_vs_HYPERNETS_20240531T100000_RHOW.csv"
-# file_name <- "/home/calanus/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_JPSS1/JPSS1_20240531T120600_vs_HYPERNETS_20240531T114500_RHOW_C.csv"
-# file_name <- file_list_clean[[1]]
 load_matchup_long <- function(file_name){
   
   df_mean <- load_matchup_mean(file_name)
@@ -231,7 +223,6 @@ load_HYPERNETS_coords <- function(file_name){
 }
 
 # Process HYPERNETS files to get mean and sd per wavelength per sequence
-# file_name <- L1C_HYPERNETS_files[2]
 proc_HYPERNETS_L1C <- function(file_name, stat_calc = TRUE){
 
   print(file_name)
@@ -301,7 +292,6 @@ proc_HYPERNETS_L1C <- function(file_name, stat_calc = TRUE){
 }
 
 # Check the amount of variance in satellite files and return a message if there is an issue
-# file_name <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_S3A/S3A_20240531T101658_vs_HYPERNETS_20240531T100000_RHOW.csv"
 sat_var_check <- function(file_name, cv_limit = 30){
   
   # Load the csv file
@@ -315,37 +305,6 @@ sat_var_check <- function(file_name, cv_limit = 30){
     df_match <- df_match |> 
       mutate(data_type = case_when(data_type == "rhow" ~ "weighted", TRUE ~ data_type))
   }
-  
-  # Old legacy code
-  # Check for variance in W_nm columns
-  # df_check <- df_match |> 
-  #   mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor)) |>
-  #   filter(!(sensor %in% c("Hyp_nosc", "Hyp"))) |>
-  #   dplyr::select(-day, -time, -latitude, -longitude, -radiometer_id, -type, -pixel_pos) |> 
-  #   pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
-  #   pivot_wider(names_from = data_type, values_from = value) |>
-  #   na.omit() |> 
-  #   mutate(max_sd_diff = abs(weighted - std_max),
-  #          min_sd_diff = abs(weighted - std_min),
-  #          # Max and min should be the same, but this addresses any rounding issues
-  #          sd = (max_sd_diff + min_sd_diff),
-  #          cv = sd/weighted,
-  #          wavelength = as.numeric(wavelength)) |> 
-  #   filter(wavelength <= 600, wavelength >= 400)
-  
-  # Old legacy code
-  # If variables are too different, issue a warning and omit file from being loaded
-  # if(nrow(df_check) > 0){
-  #   if(mean(df_check$variability_centered, na.rm = TRUE) >= cv_limit){
-  #     # warning(paste0("Weighted mean has too much variance in file : ", file_name))
-  #     # return(basename(file_name))
-  #     file_check <- basename(file_name)
-  #   } else {
-  #     file_check <- NULL
-  #   }
-  # } else {
-  #   file_check <- NULL
-  # }
 
   # Get the existing vcariance column
   df_check <- df_match |> 
@@ -365,9 +324,17 @@ sat_var_check <- function(file_name, cv_limit = 30){
 # independent derived sites alongside MAFR/THFR -- NE-quadrant, clean-water-polygon-filtered, and
 # no-spatial-filter (per-pixel-QC-only) THFR re-analyses respectively (see the TEMPORARY section in
 # this file and meta/pixel_explore.R), each intentionally kept as its own site for direct
-# comparison rather than replacing THFR anywhere in the pipeline.
+# comparison rather than replacing THFR anywhere in the pipeline. MAFR_pixel (added 2026-09-07) is
+# the analogous no-spatial-filter, .db-direct reconstruction of MAFR (db_export_matchups_mafr_pixel()),
+# built from mafr_2024.db/mafr_2025.db rather than the real Hypernets_matchups MAFR files --
+# likewise its own site, not a replacement for MAFR anywhere in the pipeline. THFR_raw/MAFR_raw
+# (added 2026-09-07) go one step further: the same 3x3-box reconstruction with NO pixel-level QC
+# gates at all (db_export_matchups_thfr_raw()/db_export_matchups_mafr_raw(), apply_pixel_qc =
+# FALSE on db_export_matchups_site()), meant to reproduce Hypernets_matchups' own unfiltered
+# aggregation as closely as possible -- also their own sites, not yet a replacement for THFR/MAFR
+# anywhere, pending validate_derived_site() review.
 available_sites <- function(sat_name){
-  candidate_sites <- c("MAFR", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel")
+  candidate_sites <- c("MAFR", "MAFR_pixel", "MAFR_raw", "THFR", "THFR_pixel", "THFR_NE", "THFR_poly", "THFR_raw")
   site_present <- vapply(candidate_sites, function(s) dir.exists(file_path_build(s, sat_name)), logical(1))
   sites_found <- candidate_sites[site_present]
   if(length(sites_found) == 0) stop(paste0("No site data found on disk for sensor: ", sat_name))
@@ -386,9 +353,9 @@ available_sites <- function(sat_name){
 # Values checked against real MAFR and THFR data via code/3_sensitivity.R (2026-07-14).
 site_diff_time_limit <- function(site_name){
   dplyr::case_when(
-    site_name == "MAFR" ~ 15,
-    site_name == "THFR" ~ 30,
-    TRUE ~ 30 # fallback for any future/unrecognised site
+    grepl("MAFR", site_name) ~ 15,
+    grepl("THFR", site_name) ~ 30,
+    TRUE ~ 30 # fallback for any site name containing neither "MAFR" nor "THFR"
   )
 }
 
@@ -404,9 +371,9 @@ site_diff_time_limit <- function(site_name){
 # Hyp == 9.969209968386869e+36, the standard netCDF double fill value).
 site_rhow_limit <- function(site_name){
   dplyr::case_when(
-    site_name == "MAFR" ~ 0.25,
-    site_name == "THFR" ~ 0.05,
-    TRUE ~ 0.05 # fallback for any future/unrecognised site
+    grepl("MAFR", site_name) ~ 0.25,
+    grepl("THFR", site_name) ~ 0.05,
+    TRUE ~ 0.05 # fallback for any site name containing neither "MAFR" nor "THFR"
   )
 }
 
@@ -447,6 +414,12 @@ site_pixel_min <- function(site_name, sensor_Y){
     1 # TEMPORARY (2026-09-04): reduced from 5 (S3A/S3B) / 3 (others) -- the clean-water polygon is
       # too small for MODIS/VIIRS/OCI to ever clear 3 pixels, leaving those sensors at zero data.
       # Revisit alongside the other temporary QC relaxations next week.
+  } else if(site_name == "MAFR_pixel"){
+    6
+  } else if(site_name %in% c("THFR_raw", "MAFR_raw")){
+    6 # mirrors the real tool's own documented ">= 6 of 9" rule (see this function's own docstring
+      # above) -- with no other pixel QC applied under apply_pixel_qc = FALSE, this is the only gate
+      # standing between "raw" and a matchup built from a single stray pixel
   } else {
     stop(paste0("No pixel-count minimum defined for site_name: ", site_name))
   }
@@ -527,7 +500,6 @@ sensor_grid <- function(sensor_Z){
 }
 
 # Output desired wavelengths based on sensor_Y
-# TODO: Increase wm range into IR
 W_nm_out <- function(sensor_Y){
   if(sensor_Y == "PACE"){
     W_nm <- 350:1150
@@ -696,37 +668,55 @@ base_stats <- function(x_vec, y_vec){
   # E.g.: df$w_x <- 1 / df$sd_x^2 OR df$w_xy <- 1 / (df$sd_x^2 + df$sd_y^2)
   # model II regression cannt be run on data with no variance
   # This is an issue for NIR HyperPRO data where the values are always the same
-  if(length(unique(round(x_clean, 8))) == 1 | length(unique(round(y_clean, 8))) == 1){
+  # n_clean < 3 guards the clearest failure mode (an exactly-2-point fit has zero residual degrees
+  # of freedom), but lmodel2()'s nperm = 99 permutation test can still fail internally
+  # (summary(<internal fit>)$coefficients[2, 1]: subscript out of bounds) on small-n data with tied
+  # values, where some permutation happens to produce a rank-deficient fit -- not something worth
+  # enumerating in advance, so the call itself is wrapped in tryCatch() below and falls back to the
+  # same all-NA Model II result used for the zero-variance/n<3 cases. First actually reached
+  # 2026-09-07 by the unfiltered "_raw" sites (apply_pixel_qc = FALSE): without the pixel-level
+  # RHOW-ceiling/negative-value pre-filtering, more implausible values and smaller/more repetitive
+  # n reach this function than the QC'd pipeline ever produced.
+  if(n_clean < 3 | length(unique(round(x_clean, 8))) == 1 | length(unique(round(y_clean, 8))) == 1){
     model_II_intercept <- NA; model_II_slope <- NA; model_II_p_perm <- NA
     model_II_slope_lo <- NA; model_II_slope_hi <- NA; model_II_int_lo <- NA
     model_II_int_hi <- NA; model_II_slope_bias_sig <- NA; model_II_int_bias_sig <- NA
   } else {
-    model_II_fit <- lmodel2::lmodel2(y_clean ~ x_clean,
-                                     range.y = "relative", 
-                                     range.x = "relative",
-                                     nperm = 99)
-  # print(model_II_fit)
-
-  # Extract results for chosen method
-  model_II_method_choice <- "SMA" # Symetrical Major Axis
-  model_II_results <- model_II_fit$regression.results |>
-    filter(Method == model_II_method_choice)
-  model_II_ci <- model_II_fit$confidence.intervals |>
-    filter(Method == model_II_method_choice)
-
-  # Get specific results
-  model_II_intercept <- model_II_results$Intercept
-  model_II_slope <- model_II_results$Slope
-  model_II_p_perm <- model_II_results$`P-perm (1-tailed)`
-
-  model_II_slope_lo <- model_II_ci$`2.5%-Slope`
-  model_II_slope_hi <- model_II_ci$`97.5%-Slope`
-  model_II_int_lo <- model_II_ci$`2.5%-Intercept`
-  model_II_int_hi <- model_II_ci$`97.5%-Intercept`
-  
-  # Determine significance
-  model_II_slope_bias_sig <- model_II_slope_lo >= 1 || model_II_slope_hi <= 1
-  model_II_int_bias_sig <- model_II_int_lo >= 0 || model_II_int_hi <= 0
+    model_II_vals <- tryCatch({
+      model_II_fit <- lmodel2::lmodel2(y_clean ~ x_clean,
+                                       range.y = "relative",
+                                       range.x = "relative",
+                                       nperm = 99)
+      # Extract results for chosen method
+      model_II_method_choice <- "SMA" # Symetrical Major Axis
+      model_II_results <- model_II_fit$regression.results |>
+        filter(Method == model_II_method_choice)
+      model_II_ci <- model_II_fit$confidence.intervals |>
+        filter(Method == model_II_method_choice)
+      list(intercept = model_II_results$Intercept, slope = model_II_results$Slope,
+           p_perm = model_II_results$`P-perm (1-tailed)`,
+           slope_lo = model_II_ci$`2.5%-Slope`, slope_hi = model_II_ci$`97.5%-Slope`,
+           int_lo = model_II_ci$`2.5%-Intercept`, int_hi = model_II_ci$`97.5%-Intercept`)
+    }, error = function(e){
+      message("base_stats(): lmodel2() failed for n = ", n_clean, " (", conditionMessage(e), ") -- Model II fields set to NA")
+      NULL
+    })
+    if(is.null(model_II_vals)){
+      model_II_intercept <- NA; model_II_slope <- NA; model_II_p_perm <- NA
+      model_II_slope_lo <- NA; model_II_slope_hi <- NA; model_II_int_lo <- NA
+      model_II_int_hi <- NA; model_II_slope_bias_sig <- NA; model_II_int_bias_sig <- NA
+    } else {
+      model_II_intercept <- model_II_vals$intercept
+      model_II_slope <- model_II_vals$slope
+      model_II_p_perm <- model_II_vals$p_perm
+      model_II_slope_lo <- model_II_vals$slope_lo
+      model_II_slope_hi <- model_II_vals$slope_hi
+      model_II_int_lo <- model_II_vals$int_lo
+      model_II_int_hi <- model_II_vals$int_hi
+      # Determine significance
+      model_II_slope_bias_sig <- model_II_slope_lo >= 1 || model_II_slope_hi <= 1
+      model_II_int_bias_sig <- model_II_int_lo >= 0 || model_II_int_hi <= 0
+    }
   }
   
 
@@ -784,19 +774,13 @@ get_nearest_pixels <- function(df_data, target_lat, target_lon, n_pixels){
 }
 
 # Function that interrogates each matchup file to produce the needed output for all following comparisons
-# file_path <- "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/MAFR/RHOW_HYPERNETS_vs_S3A/S3A_20240531T101658_vs_HYPERNETS_20240531T100000_RHOW.csv"
-# file_path <- file_list[28]
 process_matchup_file <- function(file_path){
 
   # Load the mean data
   df_mean <- load_matchup_mean(file_path)
 
   # Sensors to be compared -- always exactly 2 in practice (Hyp + one satellite; Hyp_nosc is
-  # already dropped upstream in load_matchup_mean()). Computed ONCE per file, sensor_X = Hyp
-  # (the HYPERNETS in-situ reference) vs sensor_Y = the satellite -- not both directions (removed
-  # 2026-09-03; the reverse Sat-vs-Hyp computation was a leftover from a previous project and
-  # base_stats() is not symmetric, so it was silently producing a second, differently-computed
-  # row per file that nothing downstream used).
+  # already dropped upstream in load_matchup_mean()).
   sensors <- unique(df_mean$sensor)
   if(length(sensors) != 2 || !("Hyp" %in% sensors)){
     stop(paste0("process_matchup_file() expects exactly 2 sensors incl. 'Hyp', got: ",
@@ -896,20 +880,9 @@ process_global_wavelength <- function(matchup_filt, site_name, sensor_X, sensor_
            sensor_X = sensor_X_name,
            sensor_Y = sensor_Y_name,
           #  Wavelength_nm = wavelength_nm,
-           n_w_nm = n_match, .before = "n")
-  # df_YX <- df_stats_YX |> 
-  #   mutate(site_name = site_name, 
-  #          var_name = "RHOW",
-  #          sensor_X = sensor_Y_name,
-  #          sensor_Y = sensor_X_name,
-  #         #  Wavelength_nm = wavelength_nm,
-  #          n_w_nm = n_match, .before = "n")
-  df_both <- df_XY |> #rbind(df_XY, df_YX) |> 
+           n_w_nm = n_match, .before = "n") |> 
     dplyr::rename(n_w_nm_clean = n)
-  return(df_both)
-  # } else {
-  #   print(paste0("No data for wavelength ", wavelength_nm))
-  # }
+  return(df_XY)
 }
 
 # Global stats per matchup wavelength
@@ -960,12 +933,8 @@ global_stats_impl <- function(site_name, sensor_Y, select_daily = TRUE){
   # List all files in directory
   file_list <- list.files(folder_path, pattern = "*.csv", full.names = TRUE)
   
-  # Load individual matchup results to filter file list and for further use, restricted to this
-  # site -- raw matchup filenames are not unique *across* sites (see path_site_name()), so an
-  # unrestricted basename match below could wrongly include/exclude a file based on another
-  # site's namesake rather than this one's own QC/outlier status
-  # diff_time/dist are retained (not just file_name) so daily_closest_matchup() below can select
-  # the single closest-in-time matchup per day without recomputing anything
+  # Load individual matchup results to filter file list and for further use,
+  # use the single closest-in-time matchup per day without recomputing anything
   match_base_details <- read_csv(paste0("output/matchup_stats_RHOW",filestub), show_col_types = FALSE) |>
     filter(.data$site_name == .env$site_name) |>
     dplyr::select(file_name, diff_time, dist) |> distinct()
@@ -985,7 +954,6 @@ global_stats_impl <- function(site_name, sensor_Y, select_daily = TRUE){
   # Remove outlier files
   # NB: This creates the list of valid matchups after screening for outliers in the single matchup QC process
   file_list_no_out <- file_list_clean[!basename(file_list_clean) %in% outliers_sat$file_name]
-  # file_list_no_out <- file_list_clean # Or rather do not remove outliers as this is too subjective of a process
   if(length(file_list_no_out) == 0){
     message("No files passed QC (post-outlier-screen) for ", site_name, " ", sensor_X, " ", sensor_Y, " -- skipping")
     return(tibble())
@@ -1227,19 +1195,31 @@ srf_convolve_hyp <- function(con, radiometer_id, sensor_Y, hyp_full, tol_nm = 5)
     dplyr::rename(wavelength = wavelength_nominal)
 }
 
-# Aggregate the raw measure_data_rhow rows belonging to one or more
-# measure_info entries into one spectrum (long format) per measure_info.id.
-# info_tbl: data.frame with columns id, data_id, data_count (from measure_info)
-db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
-  agg_method <- match.arg(agg_method)
-
-  # Expand each measure_info's contiguous [data_id, data_id + data_count - 1]
-  # block into individual measure_data_rhow ids, tagged with their parent
-  info_map <- info_tbl |>
-    mutate(data_id_end = data_id + data_count - 1) |>
+# Expands each measure_info row's [data_id, data_id+data_count-1] block of measure_data_rhow ids
+# into one row per (measure_info_id, data_row_id) -- shared by db_load_spectra() and
+# db_load_spectra_pixel(). HYPERNETS scans (radiometer_id == 1) are capped to their first 3 raw
+# replicate rows (by ascending id): data_count is always 6, but replicates 4-6 have been confirmed
+# (manuscript/upstream-data-bugs.md Bug 12) to sometimes belong to a second, different measurement
+# condition bundled under the same measure_info id, and the real Hypernets_matchups tool's own
+# Hyp 1/2/3 values match only replicates 1-3 to full floating-point precision. Satellite pixel-box
+# rows are never truncated -- their whole data_count block IS the pixel box.
+# info_tbl: data.frame with columns id, data_id, data_count, radiometer_id (from measure_info)
+db_expand_measure_info_ids <- function(info_tbl){
+  info_tbl |>
+    mutate(data_count_used = if_else(radiometer_id == 1L, pmin(data_count, 3L), data_count),
+           data_id_end = data_id + data_count_used - 1) |>
     rowwise() |>
     reframe(measure_info_id = id, data_row_id = seq(data_id, data_id_end)) |>
     ungroup()
+}
+
+# Aggregate the raw measure_data_rhow rows belonging to one or more
+# measure_info entries into one spectrum (long format) per measure_info.id.
+# info_tbl: data.frame with columns id, data_id, data_count, radiometer_id (from measure_info)
+db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
+  agg_method <- match.arg(agg_method)
+
+  info_map <- db_expand_measure_info_ids(info_tbl)
 
   # Pull the raw spectra for exactly the rows needed
   spec_query <- paste0("SELECT * FROM measure_data_rhow WHERE id IN (",
@@ -1281,11 +1261,7 @@ db_load_spectra <- function(con, info_tbl, agg_method = c("mean", "center")){
 # individual pixel's own value/pixel_lat/pixel_lon. Used by db_matchup_pixels()
 # below for per-pixel spatial diagnostics (see meta/pixel_explore.R).
 db_load_spectra_pixel <- function(con, info_tbl){
-  info_map <- info_tbl |>
-    mutate(data_id_end = data_id + data_count - 1) |>
-    rowwise() |>
-    reframe(measure_info_id = id, data_row_id = seq(data_id, data_id_end)) |>
-    ungroup()
+  info_map <- db_expand_measure_info_ids(info_tbl)
 
   spec_query <- paste0("SELECT * FROM measure_data_rhow WHERE id IN (",
                        paste(unique(info_map$data_row_id), collapse = ","), ")")
@@ -1328,7 +1304,7 @@ db_matchup_long <- function(db_path, sensor_Y, agg_method = c("mean", "center"))
   # Metadata (day/time/lat/lon) + data block pointers for every measure_info
   # row referenced by these matchups
   info_ids <- unique(c(match_ids$hyp_info_id, match_ids$sat_info_id))
-  info_query <- paste0("SELECT id, data_id, data_count, day, time, latitude, longitude, qc FROM measure_info WHERE id IN (",
+  info_query <- paste0("SELECT id, data_id, data_count, radiometer_id, day, time, latitude, longitude, qc FROM measure_info WHERE id IN (",
                        paste(info_ids, collapse = ","), ")")
   info_tbl <- dbGetQuery(con, info_query)
 
@@ -1447,7 +1423,7 @@ db_matchup_pixels <- function(db_path, sensor_Y){
   }
 
   info_ids <- unique(c(match_ids$hyp_info_id, match_ids$sat_info_id))
-  info_query <- paste0("SELECT id, data_id, data_count, day, time, latitude, longitude, qc FROM measure_info WHERE id IN (",
+  info_query <- paste0("SELECT id, data_id, data_count, radiometer_id, day, time, latitude, longitude, qc FROM measure_info WHERE id IN (",
                        paste(info_ids, collapse = ","), ")")
   info_tbl <- dbGetQuery(con, info_query)
 
@@ -1551,107 +1527,116 @@ db_matchup_all <- function(db_path, sensor_Y_vec = db_satellite_names, agg_metho
 # Hypernets_matchups. Nothing in the existing pipeline is affected unless/until "THFR_NE" is
 # separately added to available_sites()'s candidate list.
 
-# Helper for db_export_matchups_ne() below. Writes one NE-quadrant-filtered matchup as a raw
-# RHOW CSV, by locating the matching original THFR file(s) and copying everything except the
-# satellite sensor's rows verbatim. The HYPERNETS rows are untouched because the SRF-convolved
-# HYPERNETS value depends only on the HYPERNETS scan + the satellite's RSR, not on which
-# satellite pixels get averaged.
-# df_ne_matchup: one matchup_id's NE-quadrant satellite pixel rows for one sensor_Y (a subset of
-# db_matchup_pixels()'s output, already filtered to pixel_lat >= lat_Hyp & pixel_lon >= lon_Hyp)
+# Helper for db_export_matchups_site() below. Builds and writes one matchup's raw RHOW CSV
+# entirely from db_matchup_pixels() output -- no dependency on a real on-disk Hypernets_matchups
+# file existing for this matchup. Writes only the two rows anything downstream actually reads
+# (load_matchup_mean()'s "weighted"/"rhow" pair, sat_var_check()'s variability_centered): the
+# Hyp value is already correct by the time it reaches df_matchup (SRF-convolved for RSR sensors,
+# raw hyperspectral for PACE -- both computed by db_matchup_pixels(), dispatched on Hyp_method
+# below), and the satellite value is the mean of whichever pixels survived every upstream QC gate
+# and the site's pixel_filter_fn(). Full hyperspectral raw rows, Hyp_nosc, and separate std_max/
+# std_min rows present in real files are NOT reproduced -- confirmed unused by every consumer in
+# this pipeline (load_matchup_mean(), load_matchup_long(), sat_var_check(); load_matchup_var() is
+# dead code, zero callers) and Hyp_nosc isn't derivable from the .db at all (see 0_functions.R's
+# db_matchup_pixels() docs).
+# df_matchup: one matchup_id's surviving satellite pixel rows for one sensor_Y (post QC gates and
+#     pixel_filter_fn(), from db_export_matchups_site())
+# sat_radiometer_id: the satellite's radiometer.id (db_radiometer_id()), written into the
+#     satellite row's radiometer_id column
 # pixel_min: minimum number of contributing pixels required for a wavelength's mean/SD/CV to be
 #     written at all (site_pixel_min()) -- mirrors Hypernets_matchups' own >=6-of-9-pixels rule.
-#     Wavelengths below this are simply absent from wl_stats below, so they get written as NA in
-#     the exported CSV (existing per-wavelength NA-handling in the write loop further down); other
-#     wavelengths in the same matchup that individually clear the threshold are unaffected.
-write_matchup_csv_ne <- function(df_ne_matchup, sensor_Y, out_dir, pixel_min, tag = "NE"){
-  sat_dt_col <- paste0("dateTime_", sensor_Y)
+# Returns list(written, removal_log) -- removal_log carries the wavebands dropped for falling
+# below pixel_min, in the same schema as db_export_matchups_site()'s own gate log (see
+# log_gate_drop()), for the caller to fold into the site's combined pixel-removal CSV.
 
-  hyp_ts <- format(df_ne_matchup$dateTime_Hyp[1], "%Y%m%dT%H%M%S", tz = "Europe/Paris")
-  sat_ts <- format(df_ne_matchup[[sat_dt_col]][1], "%Y%m%dT%H%M%S", tz = "Europe/Paris")
+# Computes the exact filename write_matchup_csv_db() writes a matchup's CSV to. Used internally
+# by write_matchup_csv_db() itself, and available for joining meta/<site>_pixel_removals.csv's
+# (matchup_id, db_source, dateTime_Hyp, dateTime_sat) key against today's still-file-based
+# output/matchup_stats_RHOW_*.csv (file_name = basename(file_path), set in process_matchup_file())
+# -- not needed once/if matchup stats themselves become .db-native and drop the intermediate CSV.
+db_matchup_filename <- function(sensor_Y, dateTime_Hyp, dateTime_sat, tag){
+  hyp_ts <- format(dateTime_Hyp, "%Y%m%dT%H%M%S", tz = "Europe/Paris")
+  sat_ts <- format(dateTime_sat, "%Y%m%dT%H%M%S", tz = "Europe/Paris")
+  paste0(sensor_Y, "_", sat_ts, "_vs_HYPERNETS_", hyp_ts, "_RHOW_", tag, ".csv")
+}
 
-  # Locate the original THFR file(s) for this matchup (both _R and _C variants, if both exist)
-  orig_dir <- file_path_build("THFR", sensor_Y)
-  orig_prefix <- paste0(sensor_Y, "_", sat_ts, "_vs_HYPERNETS_", hyp_ts)
-  orig_files <- list.files(orig_dir, pattern = paste0("^", orig_prefix, ".*\\.csv$"), full.names = TRUE)
+write_matchup_csv_db <- function(df_matchup, sensor_Y, sat_radiometer_id, out_dir, pixel_min, tag,
+                                  sensor_Z, site_name){
+  # NB: df_matchup's own `site_name` column (from db_matchup_pixels()) is always the .db's base
+  # site (e.g. "THFR"), not the derived site (e.g. "THFR_NE") -- site_name/sensor_Z must be passed
+  # in explicitly by the caller rather than read off df_matchup.
+  matchup_id <- df_matchup$matchup_id[1]
+  match_date <- df_matchup$match_date[1]
+  db_source <- df_matchup$db_source[1]
 
-  if(length(orig_files) == 0){
-    message("  No original THFR file found for ", orig_prefix, " -- skipping")
-    return(invisible(NULL))
-  }
+  is_pace_style <- unique(df_matchup$Hyp_method) == "nearest_nm"
+  data_type_label <- if(is_pace_style) "rhow" else "weighted"
 
-  # Per-wavelength NE-quadrant stats for this one matchup
-  wl_stats <- df_ne_matchup |>
+  # Per-wavelength satellite pixel-box stats for this one matchup
+  wl_stats <- df_matchup |>
     summarise(mean_val = mean(.data[[sensor_Y]], na.rm = TRUE),
               sd_val = sd(.data[[sensor_Y]], na.rm = TRUE),
               n_used = n(),
-              .by = wavelength) |>
-    filter(n_used >= pixel_min)   # mirrors Hypernets_matchups' own minimum-valid-pixel rule
-  if(nrow(wl_stats) == 0) return(invisible(NULL))
+              pixel_pos_wl = paste(sort(unique(pixel_pos)), collapse = ";"),
+              .by = wavelength)
+
+  removal_log <- tibble()
+  below_min <- wl_stats |> filter(n_used < pixel_min)
+  if(nrow(below_min) > 0){
+    removal_log <- below_min |>
+      transmute(site_name = site_name, sensor_Z = sensor_Z, sensor_Y = sensor_Y, db_source = db_source,
+                matchup_id = matchup_id, match_date = match_date,
+                gate = "pixel_min_count", pixel_pos = pixel_pos_wl, wavelength = wavelength,
+                value = n_used, threshold = pixel_min)
+  }
+  wl_stats <- wl_stats |> filter(n_used >= pixel_min)   # mirrors Hypernets_matchups' own minimum-valid-pixel rule
+  if(nrow(wl_stats) == 0) return(list(written = FALSE, removal_log = removal_log))
+
+  hyp_stats <- df_matchup |> distinct(wavelength, Hyp) |> filter(wavelength %in% wl_stats$wavelength)
 
   # Single-scalar CV proxy (variability_centered is one value per file, not per wavelength) --
   # exact upstream Hypernets_matchups formula unknown. This reuses db_load_spectra()'s cv_pct
-  # logic (100 * sd/|mean|), pooled across wavebands with >= 2 contributing NE pixels. Uses the
+  # logic (100 * sd/|mean|), pooled across wavebands with >= 2 contributing pixels. Uses the
   # median rather than the mean across wavebands. A handful of near-zero-mean bands (e.g.
   # S3A's 665/673/681 nm) otherwise produce cv_pct in the thousands of percent and dominate a
   # simple mean, even though most bands sit in a plausible range (confirmed empirically).
   cv_pct_by_wl <- wl_stats |> filter(n_used >= 2, mean_val != 0) |>
     mutate(cv_pct = 100 * abs(sd_val / mean_val))
-  # Fall back to 0 (not NA) when every waveband has < 2 contributing NE pixels. With a single
+  # Fall back to 0 (not NA) when every waveband has < 2 contributing pixels. With a single
   # pixel there is no measurable spatial spread, so "no pixel disagreement detected" is the
   # correct reading, and it keeps variability_centered numeric (sat_var_check() errors on an
   # all-NA column, since it expects exactly one non-NA value per file)
   cv_scalar <- if(nrow(cv_pct_by_wl) > 0) median(cv_pct_by_wl$cv_pct, na.rm = TRUE) else 0
 
-  ne_lat <- mean(df_ne_matchup$pixel_lat, na.rm = TRUE)
-  ne_lon <- mean(df_ne_matchup$pixel_lon, na.rm = TRUE)
-  ne_pixel_pos <- paste(sort(unique(df_ne_matchup$pixel_pos)), collapse = ";")
+  sat_lat <- mean(df_matchup$pixel_lat, na.rm = TRUE)
+  sat_lon <- mean(df_matchup$pixel_lon, na.rm = TRUE)
+  sat_pixel_pos <- paste(sort(unique(df_matchup$pixel_pos)), collapse = ";")
 
-  for(orig_file in orig_files){
-    df_orig <- suppressMessages(read_delim(orig_file, delim = ";", col_types = cols(.default = "c"), show_col_types = FALSE))
-    colnames(df_orig)[1] <- "sensor"
+  out_name <- db_matchup_filename(sensor_Y, df_matchup$dateTime_Hyp[1],
+                                   df_matchup[[paste0("dateTime_", sensor_Y)]][1], tag)
+  hyp_day <- format(df_matchup$dateTime_Hyp[1], "%Y%m%d", tz = "Europe/Paris")
+  hyp_time <- format(df_matchup$dateTime_Hyp[1], "%H%M%S", tz = "Europe/Paris")
+  sat_day <- format(df_matchup[[paste0("dateTime_", sensor_Y)]][1], "%Y%m%d", tz = "Europe/Paris")
+  sat_time <- format(df_matchup[[paste0("dateTime_", sensor_Y)]][1], "%H%M%S", tz = "Europe/Paris")
 
-    is_sat_row <- grepl(paste0("^", sensor_Y, " "), df_orig$sensor)
-    if(!any(is_sat_row)){
-      message("  No ", sensor_Y, " rows found in ", basename(orig_file), " -- skipping")
-      next
-    }
+  wl_chr <- as.character(wl_stats$wavelength)
+  hyp_row <- c(list(sensor = "Hyp 1", data_type = data_type_label, day = hyp_day, time = hyp_time,
+                     latitude = round(df_matchup$lat_Hyp[1], 6), longitude = round(df_matchup$lon_Hyp[1], 6),
+                     radiometer_id = 1, pixel_pos = "", type = "in-situ"),
+               setNames(as.list(hyp_stats$Hyp[match(wl_stats$wavelength, hyp_stats$wavelength)]), wl_chr),
+               list(variability_centered = NA_real_))
+  sat_row <- c(list(sensor = paste0(sensor_Y, " 1"), data_type = data_type_label, day = sat_day, time = sat_time,
+                     latitude = round(sat_lat, 6), longitude = round(sat_lon, 6),
+                     radiometer_id = sat_radiometer_id, pixel_pos = sat_pixel_pos, type = "satellite"),
+               setNames(as.list(wl_stats$mean_val), wl_chr),
+               list(variability_centered = round(cv_scalar, 6)))
 
-    wl_cols <- setdiff(colnames(df_orig),
-                       c("sensor", "data_type", "day", "time", "latitude", "longitude",
-                         "radiometer_id", "pixel_pos", "type", "variability_centered"))
+  df_new <- bind_rows(as_tibble(hyp_row), as_tibble(sat_row))
+  colnames(df_new)[1] <- ""
 
-    df_new <- df_orig
-    df_new$latitude[is_sat_row] <- as.character(round(ne_lat, 6))
-    df_new$longitude[is_sat_row] <- as.character(round(ne_lon, 6))
-    df_new$pixel_pos[is_sat_row] <- ne_pixel_pos
-    df_new$variability_centered[is_sat_row] <- if(is.na(cv_scalar)) NA_character_ else as.character(round(cv_scalar, 6))
+  write_delim(df_new, file.path(out_dir, out_name), delim = ";", quote = "needed", na = "")
 
-    # Recompute each satellite row's wavelength values from the NE-quadrant subset. Role
-    # (mean/max/min) is read off the row's own (possibly bug-quirky, e.g. "rhow weighted")
-    # data_type label so per-sensor label variants (see manuscript/upstream-data-bugs.md, Bugs
-    # 1/2/7) are preserved untouched
-    for(ridx in which(is_sat_row)){
-      dt <- tolower(df_new$data_type[ridx])
-      role <- if(grepl("std_max", dt)) "max" else if(grepl("std_min", dt)) "min" else "mean"
-      for(wl in wl_cols){
-        wl_num <- suppressWarnings(as.numeric(wl))
-        row_stat <- wl_stats[wl_stats$wavelength == wl_num, ]
-        if(nrow(row_stat) == 0 || is.na(row_stat$mean_val)){
-          df_new[[wl]][ridx] <- NA_character_
-          next
-        }
-        val <- switch(role,
-                      mean = row_stat$mean_val,
-                      max  = row_stat$mean_val + row_stat$sd_val,
-                      min  = row_stat$mean_val - row_stat$sd_val)
-        df_new[[wl]][ridx] <- if(is.na(val)) NA_character_ else as.character(val)
-      }
-    }
-
-    out_name <- sub("\\.csv$", paste0("_", tag, ".csv"), basename(orig_file))
-    write_delim(df_new, file.path(out_dir, out_name), delim = ";", quote = "needed", na = "")
-  }
-  invisible(NULL)
+  list(written = TRUE, removal_log = removal_log)
 }
 
 # Pixel-inclusion rules -------------------------------------------------------
@@ -1717,6 +1702,50 @@ pixel_filter_inner3x3 <- function(df_pixel){
     filter(!grepl("2", pixel_pos))
 }
 
+# Looks up a radiometer's own id in the .db, e.g. for stamping the correct radiometer_id into a
+# from-scratch-written matchup row. Small helper factoring out a query already inlined identically
+# in db_matchup_long()/db_matchup_pixels().
+db_radiometer_id <- function(db_path, sensor_Y){
+  con <- dbConnect(RSQLite::SQLite(), path.expand(db_path))
+  on.exit(dbDisconnect(con), add = TRUE)
+  dbGetQuery(con, sprintf("SELECT id FROM radiometer WHERE name = '%s'", sensor_Y))$id
+}
+
+# Captures the rows one QC/spatial gate removes from df, at a given grouping grain, before they're
+# actually filtered out -- used by db_export_matchups_site() below to build the per-site
+# pixel-removal audit CSV instead of letting dropped pixels vanish with no record. group_vars
+# controls granularity: "wavelength" in group_vars means the reason genuinely depends on which
+# waveband (kept separate); "pixel_pos" in group_vars means the reason depends on which specific
+# pixel (kept separate) -- when absent, pixel_pos is written as the "ALL" sentinel because the
+# gate's value/reason doesn't vary by pixel (e.g. Hyp-side gates, matchup-level time/distance).
+# value_col is the name of the column in df holding the value that triggered the gate (NULL for
+# gates with no single numeric trigger, e.g. a spatial-filter exclusion).
+# Structural key (matchup_id, db_source, dateTime_Hyp, dateTime_sat) rather than a per-matchup
+# CSV filename: file_name only means anything while a physical per-matchup CSV exists, whereas
+# these come straight from measure_info/matchups and stay meaningful even once ingestion no
+# longer produces a per-matchup file. db_matchup_filename() can derive a filename on demand from
+# these fields for joining against today's still-file-based output/matchup_stats_RHOW_*.csv.
+log_gate_drop <- function(df, keep_lgl, gate, group_vars, value_col = NULL, threshold = NA_real_,
+                           sensor_Z, sensor_Y, site_name){
+  dropped <- df[!keep_lgl, , drop = FALSE]
+  if(nrow(dropped) == 0) return(tibble())
+  has_wavelength <- "wavelength" %in% group_vars
+  has_pixel <- "pixel_pos" %in% group_vars
+  sat_dt_col <- paste0("dateTime_", sensor_Y)
+  distinct_cols <- c("matchup_id", "match_date", "db_source", "dateTime_Hyp", sat_dt_col, group_vars)
+  if(!is.null(value_col)) distinct_cols <- c(distinct_cols, value_col)
+  dropped |>
+    distinct(across(all_of(distinct_cols))) |>
+    transmute(site_name = site_name, sensor_Z = sensor_Z, sensor_Y = sensor_Y,
+              matchup_id = matchup_id, match_date = match_date, db_source = db_source,
+              dateTime_Hyp = dateTime_Hyp, dateTime_sat = .data[[sat_dt_col]],
+              gate = gate,
+              pixel_pos = if(has_pixel) pixel_pos else "ALL",
+              wavelength = if(has_wavelength) wavelength else NA_real_,
+              value = if(!is.null(value_col)) .data[[value_col]] else NA_real_,
+              threshold = threshold)
+}
+
 # Regenerates THFR's raw per-matchup RHOW CSV files for every sensor_Y in a sensor family,
 # restricted to whichever pixels pixel_filter_fn keeps, and written under a new site folder
 # named site_name (isolated from the real THFR/MAFR data). See the section comment above for full
@@ -1725,15 +1754,31 @@ pixel_filter_inner3x3 <- function(df_pixel){
 # under the NE+3x3 filter, since the box is centered well outside the NE quadrant for those (see
 # meta/pixel_explore_output/summary.md); a similarly small survival rate is expected under the
 # clean-water-polygon filter, which is deliberately small and close to the station.
-# sensor_Z = "OLCI"; site_name = "THFR_NE"; pixel_filter_fn = pixel_filter_ne_inner3x3; file_tag = "NE"
-db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_tag,
-                                     db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+# Returns a tibble accumulating every pixel/waveband dropped along the way (QC gates, the site's
+# own spatial filter, and write_matchup_csv_db()'s per-wavelength minimum-pixel-count drop), in
+# the schema produced by log_gate_drop() -- callers (the db_export_matchups_ne/_poly/_pixel()
+# wrappers below) combine this across all 4 sensor families into one CSV per site.
+# sensor_Z = "OLCI"; site_name = "THFR_NE"; pixel_filter_fn = pixel_filter_ne_inner3x3; file_tag = "NE"; qc_site_name = "THFR"
+# apply_pixel_qc = FALSE skips the four pixel-level plausibility gates below (RHOW ceiling and
+# negative-value on both Hyp and the satellite pixel, plus the per-pixel distance gate), keeping
+# only the matchup-level diff_time gate, the spatial filter (box shape, not QC), and
+# write_matchup_csv_db()'s own minimum-valid-pixel-count gate. Used by the "_raw" sites
+# (db_export_matchups_thfr_raw()/db_export_matchups_mafr_raw() below) to reconstruct MAFR/THFR as a
+# deliberately unfiltered 3x3-box average -- as close as this repo can get to reproducing whatever
+# Hypernets_matchups' own opaque aggregation currently does, so validate_derived_site() has a fair
+# like-for-like comparison to check before anything reading the real tool's CSVs is retargeted.
+db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_tag, qc_site_name,
+                                     db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db",
+                                     apply_pixel_qc = TRUE){
+  removal_log_list <- list()
+
   sensor_Y_list <- sensor_grid(sensor_Z)$sensor_Y |> unique()
 
   for(sensor_Y in sensor_Y_list){
     message("db_export_matchups_site(", site_name, "): ", sensor_Y)
     df_pixel <- tryCatch(db_matchup_pixels(db_path, sensor_Y),
-                          warning = function(w){ message(conditionMessage(w)); tibble() })
+                          warning = function(w){ message(conditionMessage(w)); tibble() },
+                          error = function(e){ message(conditionMessage(e)); tibble() })
     if(nrow(df_pixel) == 0) next
 
     # db_matchup_pixels() returns every candidate pairing in the db's raw `matchups` table,
@@ -1743,11 +1788,13 @@ db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_t
     # matchup-level (constant per matchup_id), dist_km as returned by db_matchup_pixels() is
     # per-PIXEL (station-to-pixel, used for the bearing/quadrant diagnostics), so the
     # matchup-level distance (station-to-satellite-reference-position, matching how
-    # db_matchup_long()/process_sensor() gate distance) is recomputed here instead. Both derived
-    # sites are reinterpretations of the same underlying THFR matchups, so this stays hardcoded
-    # to THFR's own QC policy regardless of site_name.
-    
-    # Four further per-pixel QC gates in total, before write_matchup_csv_ne() aggregates the pixel
+    # db_matchup_long()/process_sensor() gate distance) is recomputed here instead. qc_site_name
+    # states which real site's QC policy applies -- "THFR" for the three THFR-derived sites (all
+    # reinterpretations of the same underlying THFR matchups), "MAFR" for a MAFR-sourced site.
+    # The error= handler above copes with mafr_2025.db's missing SNPP column (Bug 11,
+    # manuscript/upstream-data-bugs.md) the same way code/5_figures.R's Figure 1 loop already does.
+    #
+    # Four further per-pixel QC gates in total, before write_matchup_csv_db() aggregates the pixel
     # box into one matchup value (and long before the separate day-level daily_closest_matchup()
     # step further downstream in the main CSV pipeline). Three are applied here, directly on
     # df_pixel: a site-specific RHOW plausibility ceiling (site_rhow_limit()) applied to both Hyp
@@ -1758,58 +1805,269 @@ db_export_matchups_site <- function(sensor_Z, site_name, pixel_filter_fn, file_t
     # negative-value gate (RHOW < 0 is optically impossible; satellite pixels commonly go negative
     # after an over-aggressive atmospheric/glint correction, most often in the blue bands) applied
     # to both Hyp and the satellite pixel value. The fourth -- a site-specific minimum-valid-pixel-
-    # count per wavelength (site_pixel_min()), mirroring Hypernets_matchups' own >=6-of-9-pixels
-    # rule -- is computed just below and passed into write_matchup_csv_ne(), since it has to be
-    # evaluated per-wavelength on the pixel_filter_fn()-restricted candidate pool, not on df_pixel
-    # directly.
+    # count per wavelength (site_pixel_min()) -- is applied inside write_matchup_csv_db(), since it
+    # has to be evaluated per-wavelength on the pixel_filter_fn()-restricted candidate pool, not on
+    # df_pixel directly.
+    #
+    # Applied as a sequential waterfall (rather than one combined filter()) so each dropped row can
+    # be attributed to exactly the one gate that removed it, for the pixel-removal audit log --
+    # the final surviving set is identical to a combined AND-filter either way.
     sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
-    rhow_limit <- site_rhow_limit("THFR")
+    rhow_limit <- site_rhow_limit(qc_site_name)
     pixel_dist_limit <- 5
     df_pixel <- df_pixel |>
-      mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
-      # Filter by QC limits
-             # Time limit of 15 mins for MAFR, 30 for THFR
-      filter(diff_time_min <= site_diff_time_limit("THFR"),
-             # Filter by RHOW limit, 0.25 for MAFR, 0.05 for THFR
-             Hyp <= rhow_limit,
-             .data[[sensor_Y]] <= rhow_limit,
-             # Remove negative values
-             Hyp >= 0,
-             .data[[sensor_Y]] >= 0,
-             # Distance limit = flat 5 km (TEMPORARY, see comment above)
-             dist_km_matchup <= pixel_dist_limit)
+      mutate(db_source = basename(db_path),
+             dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000)
+
+    keep_time <- df_pixel$diff_time_min <= site_diff_time_limit(qc_site_name)
+    removal_log_list[[paste0(sensor_Y, "_diff_time")]] <- log_gate_drop(
+      df_pixel, keep_time, "diff_time", "matchup_id", "diff_time_min", site_diff_time_limit(qc_site_name),
+      sensor_Z, sensor_Y, site_name)
+    df_pixel <- df_pixel[keep_time, , drop = FALSE]
+
+    if(apply_pixel_qc){
+      keep_hyp_rhow <- df_pixel$Hyp <= rhow_limit
+      removal_log_list[[paste0(sensor_Y, "_hyp_rhow")]] <- log_gate_drop(
+        df_pixel, keep_hyp_rhow, "hyp_rhow_ceiling", c("matchup_id", "wavelength"), "Hyp", rhow_limit,
+        sensor_Z, sensor_Y, site_name)
+      df_pixel <- df_pixel[keep_hyp_rhow, , drop = FALSE]
+
+      keep_sat_rhow <- df_pixel[[sensor_Y]] <= rhow_limit
+      removal_log_list[[paste0(sensor_Y, "_sat_rhow")]] <- log_gate_drop(
+        df_pixel, keep_sat_rhow, "sat_rhow_ceiling", c("matchup_id", "wavelength", "pixel_pos"), sensor_Y, rhow_limit,
+        sensor_Z, sensor_Y, site_name)
+      df_pixel <- df_pixel[keep_sat_rhow, , drop = FALSE]
+
+      keep_hyp_neg <- df_pixel$Hyp >= 0
+      removal_log_list[[paste0(sensor_Y, "_hyp_neg")]] <- log_gate_drop(
+        df_pixel, keep_hyp_neg, "hyp_negative", c("matchup_id", "wavelength"), "Hyp", 0,
+        sensor_Z, sensor_Y, site_name)
+      df_pixel <- df_pixel[keep_hyp_neg, , drop = FALSE]
+
+      keep_sat_neg <- df_pixel[[sensor_Y]] >= 0
+      removal_log_list[[paste0(sensor_Y, "_sat_neg")]] <- log_gate_drop(
+        df_pixel, keep_sat_neg, "sat_negative", c("matchup_id", "wavelength", "pixel_pos"), sensor_Y, 0,
+        sensor_Z, sensor_Y, site_name)
+      df_pixel <- df_pixel[keep_sat_neg, , drop = FALSE]
+
+      keep_dist <- df_pixel$dist_km_matchup <= pixel_dist_limit
+      removal_log_list[[paste0(sensor_Y, "_dist")]] <- log_gate_drop(
+        df_pixel, keep_dist, "dist_matchup", "matchup_id", "dist_km_matchup", pixel_dist_limit,
+        sensor_Z, sensor_Y, site_name)
+      df_pixel <- df_pixel[keep_dist, , drop = FALSE]
+    }
+
     if(nrow(df_pixel) == 0){
-      message("  No matchups for ", sensor_Y, " pass the time/distance/RHOW/pixel-distance QC gate -- skipping")
+      message("  No matchups for ", sensor_Y, " pass the time/distance", if(apply_pixel_qc) "/RHOW/pixel-distance", " QC gate -- skipping")
       next
     }
 
+    df_pixel <- df_pixel |> mutate(row_uid = row_number())
     df_filt <- pixel_filter_fn(df_pixel)
+    spatial_gate <- switch(file_tag, NE = "spatial_ne_quadrant", poly = "spatial_clean_water",
+                           pixel = "spatial_inner3x3", paste0("spatial_", file_tag))
+    keep_spatial <- df_pixel$row_uid %in% df_filt$row_uid
+    removal_log_list[[paste0(sensor_Y, "_spatial")]] <- log_gate_drop(
+      df_pixel, keep_spatial, spatial_gate, "pixel_pos", value_col = NULL, threshold = NA_real_,
+      sensor_Z = sensor_Z, sensor_Y = sensor_Y, site_name = site_name)
+
     if(nrow(df_filt) == 0){
       message("  No pixels survive the ", site_name, " filter for ", sensor_Y, " -- skipping")
       next
     }
 
     pixel_min <- site_pixel_min(site_name, sensor_Y)
+    sat_radiometer_id <- db_radiometer_id(db_path, sensor_Y)
 
     out_dir <- file_path_build(site_name, sensor_Y)
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
     for(mid in unique(df_filt$matchup_id)){
-      write_matchup_csv_ne(filter(df_filt, matchup_id == mid), sensor_Y, out_dir, pixel_min, tag = file_tag)
+      csv_result <- write_matchup_csv_db(filter(df_filt, matchup_id == mid), sensor_Y, sat_radiometer_id,
+                                          out_dir, pixel_min, tag = file_tag,
+                                          sensor_Z = sensor_Z, site_name = site_name)
+      removal_log_list[[paste0(sensor_Y, "_pixel_min_", mid)]] <- csv_result$removal_log
     }
   }
+
+  bind_rows(removal_log_list)
 }
 
 # Thin, site-specific wrappers -- add a new derived site by writing one of these (plus, if the
-# inclusion rule is new, a pixel_filter_*() function above)
-db_export_matchups_ne <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
-  db_export_matchups_site(sensor_Z, "THFR_NE", pixel_filter_ne_inner3x3, "NE", db_path)
+# inclusion rule is new, a pixel_filter_*() function above). Each loops internally over every
+# sensor family (rather than being called once per sensor_Z externally) so the pixel-removal log
+# can be accumulated in memory across all 4 sensor families and written once per site -- mirroring
+# how meta/satellite_outliers.csv is already built (code/2_outliers.R), rather than read-modify-
+# appending to a file across separate calls.
+db_export_matchups_ne <- function(sensor_Z_vec = c("MODIS", "VIIRS", "OLCI", "OCI"),
+                                   db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  removal_log <- purrr::map_dfr(sensor_Z_vec, db_export_matchups_site,
+                                 site_name = "THFR_NE", pixel_filter_fn = pixel_filter_ne_inner3x3,
+                                 file_tag = "NE", qc_site_name = "THFR", db_path = db_path)
+  write_csv(removal_log, "meta/THFR_NE_pixel_removals.csv")
+  invisible(removal_log)
 }
-db_export_matchups_poly <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
-  db_export_matchups_site(sensor_Z, "THFR_poly", pixel_filter_clean_water, "poly", db_path)
+db_export_matchups_poly <- function(sensor_Z_vec = c("MODIS", "VIIRS", "OLCI", "OCI"),
+                                     db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  removal_log <- purrr::map_dfr(sensor_Z_vec, db_export_matchups_site,
+                                 site_name = "THFR_poly", pixel_filter_fn = pixel_filter_clean_water,
+                                 file_tag = "poly", qc_site_name = "THFR", db_path = db_path)
+  write_csv(removal_log, "meta/THFR_poly_pixel_removals.csv")
+  invisible(removal_log)
 }
-db_export_matchups_pixel <- function(sensor_Z, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
-  db_export_matchups_site(sensor_Z, "THFR_pixel", pixel_filter_inner3x3, "pixel", db_path)
+db_export_matchups_pixel <- function(sensor_Z_vec = c("MODIS", "VIIRS", "OLCI", "OCI"),
+                                      db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  removal_log <- purrr::map_dfr(sensor_Z_vec, db_export_matchups_site,
+                                 site_name = "THFR_pixel", pixel_filter_fn = pixel_filter_inner3x3,
+                                 file_tag = "pixel", qc_site_name = "THFR", db_path = db_path)
+  write_csv(removal_log, "meta/THFR_pixel_pixel_removals.csv")
+  invisible(removal_log)
+}
+
+# Loops db_export_matchups_site() (unchanged) over every (db_path, sensor_Z) combination for a
+# site drawing from more than one .db file -- needed for MAFR, whose two files (mafr_2024.db/
+# mafr_2025.db) have independent auto-increment matchups.id values that collide across the two.
+# db_export_matchups_site() already stamps db_source = basename(db_path) onto every removal-log
+# row itself, so this just combines and writes once per site. Output CSV filenames themselves
+# never collide across db_paths since they're built from timestamps, not matchup_id.
+db_export_matchups_multi <- function(sensor_Z_vec, db_paths, site_name, pixel_filter_fn,
+                                      file_tag, qc_site_name, apply_pixel_qc = TRUE){
+  removal_log <- purrr::map_dfr(db_paths, function(db_path){
+    purrr::map_dfr(sensor_Z_vec, db_export_matchups_site,
+                    site_name = site_name, pixel_filter_fn = pixel_filter_fn,
+                    file_tag = file_tag, qc_site_name = qc_site_name, db_path = db_path,
+                    apply_pixel_qc = apply_pixel_qc)
+  })
+  write_csv(removal_log, paste0("meta/", site_name, "_pixel_removals.csv"))
+  invisible(removal_log)
+}
+
+# Regenerates MAFR's own matchup data directly from its .db files, mirroring THFR_pixel exactly:
+# same pixel_filter_inner3x3 (3x3 box, no extra spatial restriction -- what real Hypernets_matchups
+# itself exports), same "pixel" tag, same per-matchup-file convention under file_path_build()'s
+# existing FR/ tree -- just sourced from MAFR's two .db files with MAFR's own QC policy
+# (site_rhow_limit("MAFR")/site_diff_time_limit("MAFR")) instead of THFR's. Wired into
+# available_sites()'s candidate list and called from code/1_matchups_single.R.
+db_export_matchups_mafr_pixel <- function(sensor_Z_vec = c("MODIS", "VIIRS", "OLCI", "OCI"),
+                                           db_paths = c("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2024.db",
+                                                        "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2025.db")){
+  db_export_matchups_multi(sensor_Z_vec, db_paths, site_name = "MAFR_pixel",
+                            pixel_filter_fn = pixel_filter_inner3x3, file_tag = "pixel",
+                            qc_site_name = "MAFR")
+}
+
+# Deliberately unfiltered reconstruction of THFR/MAFR themselves (apply_pixel_qc = FALSE -- see its
+# docstring on db_export_matchups_site() above): same 3x3 box as the real tool exports
+# (pixel_filter_inner3x3), same per-matchup-file convention, but none of the RHOW-ceiling/negative-
+# value/pixel-distance gates, so this is as close to Hypernets_matchups' own (opaque) box-averaging
+# as this repo can reconstruct. Written to "THFR_raw"/"MAFR_raw" -- a new site, not a replacement
+# for THFR/MAFR -- specifically so validate_derived_site() can check it against the real tool
+# output before anything is retargeted onto it.
+db_export_matchups_thfr_raw <- function(sensor_Z_vec = c("MODIS", "VIIRS", "OLCI", "OCI"),
+                                         db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db"){
+  removal_log <- purrr::map_dfr(sensor_Z_vec, db_export_matchups_site,
+                                 site_name = "THFR_raw", pixel_filter_fn = pixel_filter_inner3x3,
+                                 file_tag = "raw", qc_site_name = "THFR", db_path = db_path,
+                                 apply_pixel_qc = FALSE)
+  write_csv(removal_log, "meta/THFR_raw_pixel_removals.csv")
+  invisible(removal_log)
+}
+db_export_matchups_mafr_raw <- function(sensor_Z_vec = c("MODIS", "VIIRS", "OLCI", "OCI"),
+                                         db_paths = c("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2024.db",
+                                                      "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2025.db")){
+  db_export_matchups_multi(sensor_Z_vec, db_paths, site_name = "MAFR_raw",
+                            pixel_filter_fn = pixel_filter_inner3x3, file_tag = "raw",
+                            qc_site_name = "MAFR", apply_pixel_qc = FALSE)
+}
+
+# Validation diagnostic (non-blocking) -------------------------------------
+# Since THFR_NE/THFR_poly/THFR_pixel/THFR_raw are reinterpretations of the same underlying THFR
+# matchups (and MAFR_pixel/MAFR_raw of the same underlying MAFR matchups), a real Hypernets_matchups
+# file exists for many of the same matchup timestamps -- giving a ground truth to numerically check
+# write_matchup_csv_db()'s from-scratch reconstruction against, since the real tool's own
+# box-averaging/variability_centered formula is undocumented anywhere.
+# Not run as part of the main pipeline (see the "Validation Hypernets_matchups vs direct .db"
+# section of code/3_sensitivity.R, which is where these calls actually live) -- purely diagnostic,
+# flags mismatches for human review rather than asserting/blocking.
+validate_derived_site <- function(site_name, tag, db_path = "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/thfr_2025.db",
+                                   real_site_name = "THFR"){
+  results <- purrr::map_dfr(db_satellite_names, function(sensor_Y){
+    derived_dir <- file_path_build(site_name, sensor_Y)
+    if(!dir.exists(derived_dir)) return(tibble())
+    derived_files <- list.files(derived_dir, pattern = paste0("_RHOW_", tag, "\\.csv$"), full.names = TRUE)
+    if(length(derived_files) == 0) return(tibble())
+
+    real_dir <- file_path_build(real_site_name, sensor_Y)
+
+    purrr::map_dfr(derived_files, function(f){
+      fname <- basename(f)
+      m <- regmatches(fname, regexec(
+        paste0("^", sensor_Y, "_(\\d{8}T\\d{6})_vs_HYPERNETS_(\\d{8}T\\d{6})_RHOW_", tag, "\\.csv$"), fname))[[1]]
+      if(length(m) != 3) return(tibble())
+      sat_ts <- m[2]; hyp_ts <- m[3]
+
+      real_prefix <- paste0(sensor_Y, "_", sat_ts, "_vs_HYPERNETS_", hyp_ts)
+      real_files <- list.files(real_dir, pattern = paste0("^", real_prefix, ".*\\.csv$"), full.names = TRUE)
+      if(length(real_files) == 0){
+        message("  validate_derived_site(): no real ", real_site_name, " file for ", real_prefix, " -- skipping")
+        return(tibble())
+      }
+
+      df_derived <- tryCatch(load_matchup_mean(f), error = function(e) NULL)
+      df_real <- tryCatch(load_matchup_mean(real_files[1]), error = function(e) NULL)
+      if(is.null(df_derived) || is.null(df_real)) return(tibble())
+
+      to_wide <- function(df, suffix){
+        df |>
+          # day/time/latitude/longitude differ between the Hyp and satellite rows (each sensor's
+          # own timestamp/position) -- must be dropped before pivot_wider() the same way
+          # load_matchup_long() already does, otherwise they act as extra id columns and pivot_wider
+          # can't merge the two rows into one per wavelength
+          dplyr::select(-day, -time, -latitude, -longitude) |>
+          pivot_longer(cols = matches("^[0-9]+$"), names_to = "wavelength", values_to = "value") |>
+          mutate(wavelength = as.numeric(wavelength)) |>
+          na.omit() |>
+          pivot_wider(names_from = sensor, values_from = value) |>
+          rename_with(~paste0(.x, suffix), -wavelength)
+      }
+
+      joined <- tryCatch(
+        inner_join(to_wide(df_derived, "_derived"), to_wide(df_real, "_real"), by = "wavelength"),
+        error = function(e) tibble())
+      if(nrow(joined) == 0) return(tibble())
+
+      sat_derived_col <- paste0(sensor_Y, "_derived"); sat_real_col <- paste0(sensor_Y, "_real")
+      if(!all(c(sat_derived_col, sat_real_col) %in% colnames(joined))) return(tibble())
+
+      joined |>
+        transmute(site_name = site_name, sensor_Y = sensor_Y, file_name = fname, wavelength,
+                  Hyp_real, Hyp_derived,
+                  Hyp_diff = Hyp_derived - Hyp_real,
+                  Hyp_pct_diff = 100 * Hyp_diff / Hyp_real,
+                  Sat_real = .data[[sat_real_col]], Sat_derived = .data[[sat_derived_col]],
+                  Sat_diff = Sat_derived - Sat_real,
+                  Sat_pct_diff = 100 * Sat_diff / Sat_real)
+    })
+  })
+
+  if(nrow(results) == 0){
+    message("validate_derived_site(", site_name, "): no overlapping real/derived matchups found to compare")
+    return(invisible(results))
+  }
+
+  write_csv(results, paste0("meta/validate_", site_name, ".csv"))
+
+  summary_tbl <- results |>
+    summarise(median_abs_Hyp_pct = median(abs(Hyp_pct_diff), na.rm = TRUE),
+              iqr_abs_Hyp_pct = IQR(abs(Hyp_pct_diff), na.rm = TRUE),
+              median_abs_Sat_pct = median(abs(Sat_pct_diff), na.rm = TRUE),
+              iqr_abs_Sat_pct = IQR(abs(Sat_pct_diff), na.rm = TRUE),
+              n_flagged_over_5pct = sum(abs(Hyp_pct_diff) > 5 | abs(Sat_pct_diff) > 5, na.rm = TRUE),
+              n = n(),
+              .by = sensor_Y)
+  print(summary_tbl)
+
+  invisible(results)
 }
 
 

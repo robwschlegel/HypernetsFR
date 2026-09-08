@@ -7,23 +7,34 @@
 source("code/0_functions.R")
 
 
-# TEMPORARY: derived THFR matchup sites ------------------------------------
+# TEMPORARY: derived THFR/MAFR matchup sites -------------------------------
 # Addresses the off-center satellite pixel-box extraction found in meta/pixel_explore.R (see
 # meta/pixel_explore_output/summary.md). Regenerates raw per-matchup RHOW CSVs under new site
-# folders (db_export_matchups_site() / write_matchup_csv_ne() in code/0_functions.R), kept fully
+# folders (db_export_matchups_site() / write_matchup_csv_db() in code/0_functions.R), kept fully
 # independent of THFR/MAFR (not a replacement for THFR anywhere): THFR_NE restricts to the NE
 # quadrant of the inner 3x3 pixel grid, THFR_poly restricts to the hand-drawn clean-water polygon,
 # and THFR_pixel restricts only to the inner 3x3 pixel grid with no further spatial subsetting
 # (isolates the effect of the shared per-pixel QC gates in db_export_matchups_site() -- RHOW
 # ceiling, negative-value, distance, and minimum-valid-pixel-count -- from the spatial filters
-# used by THFR_NE/THFR_poly).
-# All three are first-class sites alongside MAFR/THFR (added to available_sites()'s candidate
-# list) so they must be generated here, before process_sensor() below, which picks them up
-# automatically via sensor_grid()/available_sites() the same way it already does for MAFR/THFR.
+# used by THFR_NE/THFR_poly). MAFR_pixel (added 2026-09-07) is the analogous no-spatial-filter
+# reconstruction of MAFR, sourced from mafr_2024.db/mafr_2025.db via db_export_matchups_multi().
+# THFR_raw/MAFR_raw (added 2026-09-07) go one step further again: the same 3x3-box reconstruction
+# with apply_pixel_qc = FALSE, i.e. no pixel-level QC gates at all -- meant to reproduce
+# Hypernets_matchups' own unfiltered aggregation, so validate_derived_site() (see
+# code/3_sensitivity.R) has a fair like-for-like check before MAFR/THFR themselves are ever
+# retargeted onto .db-native data. All six are first-class sites alongside MAFR/THFR (added to
+# available_sites()'s candidate list) so they must be generated here, before process_sensor()
+# below, which picks them up automatically via sensor_grid()/available_sites() the same way it
+# already does for MAFR/THFR. Each call loops internally over all 4 sensor families (rather than
+# being called once per sensor_Z here) so it can accumulate one pixel-removal audit CSV per site
+# (meta/<site>_pixel_removals.csv) across every sensor family in a single write.
 
-for(sZ in c("MODIS", "VIIRS", "OLCI", "OCI")) db_export_matchups_ne(sZ)
-for(sZ in c("MODIS", "VIIRS", "OLCI", "OCI")) db_export_matchups_poly(sZ)
-for(sZ in c("MODIS", "VIIRS", "OLCI", "OCI")) db_export_matchups_pixel(sZ)
+db_export_matchups_ne()
+db_export_matchups_poly()
+db_export_matchups_pixel()
+db_export_matchups_mafr_pixel()
+db_export_matchups_thfr_raw()
+db_export_matchups_mafr_raw()
 
 
 # Individual matchup stats ------------------------------------------------
