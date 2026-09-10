@@ -22,18 +22,30 @@ library(tidyterra)  # geom_spatraster_rgb() for Figure 1
 # NB: This can only be run via a terminal due to the multicore code
 # Rscript code/5_figures.R
 
-# Satellite
-global_scatterplot_stack("MODIS")
-global_scatterplot_stack("VIIRS")
-global_scatterplot_stack("OLCI")
-global_scatterplot_stack("OCI")
+# TEMPORARY (2026-09-10): the manuscript now reports the .db-reconstructed derived sites
+# (MAFR_pixel/THFR_pixel) rather than the real MAFR/THFR match-ups -- MAFR_pixel/THFR_pixel have
+# substantially larger post-outlier-screen samples (see manuscript/track-changes.md), especially at
+# THFR. This is a provisional choice pending a future team decision, not a permanent one -- see
+# manuscript/roadmap.md. Revert to `manuscript_sites <- NULL` (or remove the `sites =` arguments
+# below) to go back to plotting every site found on disk.
+manuscript_sites <- c("MAFR_pixel", "THFR_pixel")
 
-# Per-waveband scatterplots (site as point shape/colour) -- exposes bad individual wavebands
-# (e.g. blue bands) that are hard to spot in the per-site stacks above
-global_scatterplot_waveband("MODIS")
-global_scatterplot_waveband("VIIRS")
-global_scatterplot_waveband("OLCI")
-global_scatterplot_waveband("OCI")
+# Satellite
+global_scatterplot_stack("MODIS", sites = manuscript_sites)
+global_scatterplot_stack("VIIRS", sites = manuscript_sites)
+global_scatterplot_stack("OLCI", sites = manuscript_sites)
+global_scatterplot_stack("OCI", sites = manuscript_sites)
+
+# Per-waveband scatterplots, one per platform (not per sensor family, 2026-09-10 rewrite): each
+# facets by (site, waveband) with true per-panel independent axes -- exposes bad individual
+# wavebands (e.g. blue bands) that are hard to spot in the per-site stacks above
+global_scatterplot_waveband("AQUA", sites = manuscript_sites)
+global_scatterplot_waveband("SNPP", sites = manuscript_sites)
+global_scatterplot_waveband("JPSS1", sites = manuscript_sites)
+global_scatterplot_waveband("JPSS2", sites = manuscript_sites)
+global_scatterplot_waveband("S3A", sites = manuscript_sites)
+global_scatterplot_waveband("S3B", sites = manuscript_sites)
+global_scatterplot_waveband("PACE", sites = manuscript_sites)
 
 # Stop here if running from terminal
 if (!interactive()) quit(save = "no", status = 0)
@@ -253,11 +265,12 @@ ggsave("figures/fig_1.png", pl_map, height = 7, width = 14)
 
 # Figure 3 ----------------------------------------------------------------
 # HYPERNETS hyperspectral spectrum vs satellite band-equivalent Rhow for one
-# representative matchup date at MAFR. Dates with OCI + OLCI + VIIRS coverage:
-# 20240605, 20240619, 20240811, 20241011, 20250711
+# representative matchup date at MAFR_pixel (TEMPORARY, see manuscript_sites note above --
+# the previous real-MAFR date, 20240811, has no PACE coverage under MAFR_pixel). Dates with
+# OCI + OLCI + VIIRS coverage under MAFR_pixel: 20240605, 20240619, 20250705, 20250708.
 
-match_site <- "MAFR"
-match_date <- "20240811"
+match_site <- "MAFR_pixel"
+match_date <- "20240605"
 
 # Load one matchup file for site / sat_name / date_str; return long data frame
 # with columns: sensor, wavelength, rhow, std_min, std_max.
@@ -437,6 +450,7 @@ ggsave("figures/fig_4.png", fig_4, width = 12, height = ceiling(length(fig4_pane
 # it's bucketed into broad bands below instead (pace_waveband_bucket(), same as elsewhere).
 df_matchups_global <- read_csv("output/global_stats_all.csv", show_col_types = FALSE) |>
   filter(sensor_X == "HYPERNETS", sensor_Y != "HYPERNETS") |>
+  filter(site_name %in% manuscript_sites) |>
   rename(Error = Error_50) |>
   group_by(sensor_Y) |>
   filter(sensor_Y == "PACE" | wavelength %in% W_nm_out(sensor_Y[1])) |>
@@ -474,11 +488,10 @@ df_matchups_global_pretty <- df_matchups_global |>
          # rows for the same sensor/waveband (which have very different Error_50, e.g. up to 1600%
          # at THFR vs ~140% at MAFR) were averaged/overplotted together. See manuscript/track-changes.md.
          # An explicit factor(levels=) silently NAs out (and drops from the facet) any site_name not
-         # listed here -- caught 2026-09-08 when MAFR_pixel/THFR_raw/MAFR_raw (added 2026-09-07) were
-         # missing from this list despite already being in available_sites(); keep this in sync with
-         # available_sites()'s candidate_sites whenever a new derived site is added.
-         site_name = factor(site_name, levels = c("MAFR", "MAFR_pixel", "MAFR_raw",
-                                                   "THFR", "THFR_NE", "THFR_poly", "THFR_pixel", "THFR_raw")))
+         # listed here -- now restricted to `manuscript_sites` (see the TEMPORARY note above the
+         # scatterplot calls) rather than every candidate site, since df_matchups_global is already
+         # filtered to those sites above.
+         site_name = factor(site_name, levels = manuscript_sites))
 
 # Matrix plot
 plot_matrix_error <- function(df, val_range) {
@@ -547,10 +560,10 @@ ggsave("figures/fig_11.png", fig_11, width = 34, height = 9)
 
 # Fig S1 ------------------------------------------------------------------
 
-# Barplot of PACE OCI Error and Bias across all wavelengths (HYPERNETS vs PACE at MAFR)
+# Barplot of PACE OCI Error and Bias across all wavelengths (HYPERNETS vs PACE)
 global_stats_OCI <- read_csv("output/global_stats_RHOW_OCI.csv", show_col_types = FALSE) |>
-  filter(sensor_X == "HYPERNETS", sensor_Y == "PACE") |> 
-  filter(site_name %in% c("MAFR", "THFR_pixel"))
+  filter(sensor_X == "HYPERNETS", sensor_Y == "PACE") |>
+  filter(site_name %in% manuscript_sites)
 
 theme_S1 <- theme(panel.border  = element_rect(fill = NA, color = "black"),
                   axis.title.x  = element_markdown(size = 12),
