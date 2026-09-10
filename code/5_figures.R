@@ -150,11 +150,25 @@ site_bbox_sf <- function(lon, lat, half_width_m = 2500, crs_metric = 2154){
 sensor_colours <- setNames(RColorBrewer::brewer.pal(length(db_satellite_names), "Set1"), db_satellite_names)
 pixel_positions <- pixel_positions |> mutate(sensor_Y = factor(sensor_Y, levels = db_satellite_names))
 
+# Nearest already-existing town/city within each site's 5x5 km bounding box
+# (confirmed via OSM/Nominatim reverse geocoding against the box centroid):
+# MAFR's box contains only Le Verdon-sur-Mer (~1.7 km from the station); THFR's
+# box contains both Bouzigues (a small village) and Balaruc-les-Bains (a larger
+# spa town, ~1.6 km from the station) -- the latter is used as it is both
+# closer and the larger settlement of the two.
+city_labels <- tibble(
+  site = c("MAFR", "THFR"),
+  city = c("Le Verdon-sur-Mer", "Balaruc-les-Bains"),
+  lon = c(-1.0622993, 3.6795450),
+  lat = c(45.5475430, 43.4444987)
+)
+
 fig1_panel <- function(site_name_i, tile_zoom = 16){
   station_row <- station_in_situ |> dplyr::filter(site == site_name_i)
   bbox_i <- site_bbox_sf(station_row$lon, station_row$lat)
   tile_i <- get_tiles_retry(bbox_i, provider = ign_ortho, crop = TRUE, zoom = tile_zoom)
   pixels_i <- pixel_positions |> dplyr::filter(site_name == site_name_i)
+  city_i <- city_labels |> dplyr::filter(site == site_name_i)
 
   # Clip the panel to the tile's own extent, not the union of all plotted
   # layers -- otherwise a single stray pixel_lon/pixel_lat (no QC filtering
@@ -203,6 +217,13 @@ fig1_panel <- function(site_name_i, tile_zoom = 16){
                size = 3, alpha = 0.85) +
     geom_point(aes(x = station_row$lon, y = station_row$lat),
                colour = "red", shape = 4, size = 4, stroke = 2) +
+    geom_point(data = city_i, aes(x = lon, y = lat),
+               colour = "black", fill = "white", shape = 24, size = 2.4, stroke = 0.9,
+               inherit.aes = FALSE) +
+    geom_label(data = city_i, aes(x = lon, y = lat, label = city),
+               nudge_y = 0.22 * km_lat, size = 2.6, fontface = "bold", colour = "black",
+               fill = alpha("white", 0.75), linewidth = 0.2, label.padding = unit(0.12, "lines"),
+               inherit.aes = FALSE) +
     geom_rect(data = bg_df, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
               fill = "white", alpha = 0.6, colour = NA, inherit.aes = FALSE) +
     geom_rect(data = bar_df, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = bar_fill),
