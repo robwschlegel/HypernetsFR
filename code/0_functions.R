@@ -156,34 +156,6 @@ load_matchup_long <- function(file_name){
   return(df_long)
 }
 
-# Load the variance data for a matchup file
-load_matchup_var <- function(file_name){
-
-  # Load the csv file
-  suppressMessages(
-    df_match <- read_delim(file_name, delim = ";", col_types = "ccccnnic")
-  )
-  colnames(df_match)[1] <- "sensor"
-  
-  # Calculate uncertainties per wavelength
-  df_var <- df_match |> 
-    mutate(sensor = gsub(" 1$| 2$| 3$| 4$| 5$| 6$| 7$| 8$| 9$", "", sensor),
-           var_name = "rhow") |>
-    filter(!(sensor %in% c("Hyp_nosc"))) |> 
-    # distinct() |> 
-    dplyr::select(-day, -time, -latitude, -longitude, -radiometer_id, -type) |> 
-    mutate(data_type = case_when(data_type == "rhow" ~ "var_value", TRUE ~ data_type)) |> 
-    pivot_longer(cols = matches("1|2|3|4|5|6|7|8|9"), names_to = "wavelength", values_to = "value") |> 
-    pivot_wider(names_from = data_type, values_from = value) |>
-    # na.omit() |> 
-    mutate(max_sd_diff = abs(var_value - std_max),
-           min_sd_diff = abs(var_value - std_min),
-           # Max and min should be the same, but this addresses any rounding issues
-           sd = (max_sd_diff + min_sd_diff)/2,
-           cv = sd/var_value,
-           wavelength = as.numeric(wavelength))
-}
-
 # Load all files in a given folder
 load_matchups_folder <- function(site_name, sat_name, long = FALSE){
   
@@ -215,80 +187,6 @@ load_matchups_folder <- function(site_name, sat_name, long = FALSE){
 
   # Exit
   return(match_base)
-}
-
-# Convenience function to get lon/lat coords from HYPERNETS .nc files
-load_HYPERNETS_coords <- function(file_name){
-  ncdump::NetCDF(file_name)$attribute$global[c("site_longitude", "site_latitude")]
-}
-
-# Process HYPERNETS files to get mean and sd per wavelength per sequence
-proc_HYPERNETS_L1C <- function(file_name, stat_calc = TRUE){
-
-  print(file_name)
-
-  # Get file info for use later
-  suppressMessages(nc_info <- ncdump::NetCDF(file_name))
-  
-  # Load observation values
-  df_meta <- tidync(file_name) |> 
-    activate("D1") |> 
-    hyper_tibble()
-
-  # Loda measurement variables
-  df_base <- tidync(file_name) |> 
-    hyper_tibble() |> 
-    mutate(Rrs = reflectance / pi, .before = "downwelling_radiance") |> 
-    left_join(df_meta, by = "scan") |> 
-    dplyr::select(wavelength, scan, rhof_wind:rhof_vza, Rrs:reflectance_nosc)
-  
-  # Calculate stats if desired
-  if(stat_calc){
-
-    df_res <- df_base |> 
-      pivot_longer(rhof_wind:reflectance_nosc) |> 
-      mutate(wavelength = round(as.numeric(wavelength))) |> 
-      summarise(n = n(),
-                mean = mean(value, na.rm = TRUE),
-                sd = sd(value, na.rm = TRUE), .by = c("wavelength", "name")) |> #, "scan")) |> 
-      # filter(name != "reflectance_nosc") |> 
-      mutate(cv = sd / mean,
-            lon = nc_info$attribute$global$site_longitude,
-            lat = nc_info$attribute$global$site_latitude,
-            date = as.POSIXct(sub("SEQ", "", nc_info$attribute$global$source_file),
-              format = "%Y%m%dT%H%M%S", tz = "UTC"),
-            system = "HYPERNETS") |> 
-      mutate(name = case_when(name == "reflectance" ~ "Rhow",
-                              name == "reflectance_nosc" ~ "Rhow_nosc",
-                              name == "water_leaving_radiance" ~ "Lw",
-                              name == "downwelling_radiance" ~ "Ld",
-                              name == "upwelling_radiance" ~ "Lu",
-                              name == "irradiance" ~ "Ed",
-                              TRUE ~ name)) |> 
-      dplyr::select(system, lon, lat, date, name, wavelength, n, mean, sd, cv)
-
-  } else {
-
-    df_res <- df_base |> 
-      pivot_longer(rhof_wind:reflectance_nosc) |> 
-      mutate(wavelength = round(as.numeric(wavelength)),
-             lon = nc_info$attribute$global$site_longitude,
-             lat = nc_info$attribute$global$site_latitude,
-             date = as.POSIXct(sub("SEQ", "", nc_info$attribute$global$source_file),
-               format = "%Y%m%dT%H%M%S", tz = "UTC"),
-            system = "HYPERNETS") |> 
-      mutate(name = case_when(name == "reflectance" ~ "Rhow",
-                              name == "reflectance_nosc" ~ "Rhow_nosc",
-                              name == "water_leaving_radiance" ~ "Lw",
-                              name == "downwelling_radiance" ~ "Ld",
-                              name == "upwelling_radiance" ~ "Lu",
-                              name == "irradiance" ~ "Ed",
-                              TRUE ~ name)) |> 
-      dplyr::select(system, lon, lat, date, name, wavelength, value)
-  }
-  
-  # Exit
-  return(df_res)
 }
 
 # Check the amount of variance in satellite files and return a message if there is an issue
@@ -345,15 +243,21 @@ available_sites <- function(sat_name){
 # NB: unlike Doxaran et al. 2024 (who additionally varied the *spatial* matchup criterion per site --
 # a 3x3-pixel box at Berre vs. nearest-pixel-only at Gironde), this pipeline keeps ONE spatial rule
 # (nearest pixel + a per-sensor dist_limit = 2x sensor_resolution_km(sensor_Y), see process_sensor();
-# a flat 10 km ceiling was used until 2026-09-03, and a 3x multiplier until 2026-09-04) for every site, and
-# varies only the TIME window: MAFR's fast tidal turbidity dynamics need a tighter window than THFR's
-# comparatively stable lagoon water, mirroring Doxaran et al. 2024's Gironde (+/-15 min) vs Berre
-# (+/-30 min) choice. See code/3_sensitivity.R for the empirical check behind these two numbers, and
-# manuscript/roadmap.md for the open methodological question this resolves.
-# Values checked against real MAFR and THFR data via code/3_sensitivity.R (2026-07-14).
+# a flat 10 km ceiling was used until 2026-09-03, and a 3x multiplier until 2026-09-04) for every site.
+# MAFR raised from 15 to 30 min on 2026-09-10, after an empirical check (pooled across sensors,
+# dist-QC-passed matchups only, from output/matchup_noQC_stats_RHOW_*.csv) found the 15->30 min
+# widening nearly doubles usable MAFR matchups (571 -> 1062) for a small cost in typical error
+# (median Error_50 31.96% -> 33.03%, mean 48.59% -> 50.02%). MAFR and THFR now share the same 30 min
+# window, mirroring Doxaran et al. 2024's Berre value rather than their tighter Gironde value -- see
+# manuscript/roadmap.md's "site-specific matchup criteria" item for the full comparison table and
+# literature context (Doxaran et al. 2024 used Gironde's own tighter +/-15 min, justified by >20%
+# variability beyond +/-30 min there, so this is a considered departure from that precursor's choice,
+# not an oversight). THFR's own 30 min ceiling was separately found to already be the maximum
+# diff_time present anywhere in the raw matchup pool for either site -- Hypernets_matchups itself
+# appears to only ever generate candidate pairs within a +/-30 min window upstream of this gate.
 site_diff_time_limit <- function(site_name){
   dplyr::case_when(
-    grepl("MAFR", site_name) ~ 15,
+    grepl("MAFR", site_name) ~ 30,
     grepl("THFR", site_name) ~ 30,
     TRUE ~ 30 # fallback for any site name containing neither "MAFR" nor "THFR"
   )
@@ -379,7 +283,7 @@ site_rhow_limit <- function(site_name){
 
 # Nominal per-sensor pixel resolution (km at nadir), added 2026-09-03. Used to derive a per-pixel
 # distance QC gate (2x the sensor's own resolution, tightened from 3x on 2026-09-04 -- e.g. PACE's
-# 1 km resolution gives a 2 km ceiling) that is much tighter than the fixed 10 km dist_limit used
+# 1.2 km resolution gives a 2.4 km ceiling) that is much tighter than the fixed 10 km dist_limit used
 # at the whole-matchup level (process_sensor()/db_export_matchups_site()), since a pixel several resolution-cells away from
 # the station is increasingly unlikely to represent the water actually seen by HYPERNETS.
 sensor_resolution_km <- function(sensor_Y){
@@ -390,7 +294,13 @@ sensor_resolution_km <- function(sensor_Y){
   } else if(sensor_Y %in% c("SNPP", "JPSS1", "JPSS2")){
     0.75  # VIIRS ocean-colour EDR, ~750 m at nadir
   } else if(sensor_Y == "PACE"){
-    1     # PACE OCI, ~1 km at nadir
+    1.2   # PACE OCI, 1.2 km x 1.2 km ground sample footprint at nadir (corrected 2026-09-10 from
+          # 1 km, which was OCI's design-goal GSD, not its specified/delivered resolution -- see
+          # https://pace.oceansciences.org/oci.htm ("1.2 km x 1.2 km ground sample footprint at
+          # the center of the scan") vs. https://pace.oceansciences.org/requirements.htm ("a GSD
+          # of 1km enables global science", a design rationale, not the OCI-60 GSD requirement
+          # itself). meta/pixel_explore_output/pixel_spacing_summary.csv's empirical PACE nearest-
+          # neighbour spacing (~1.68-1.71 km) is 1.40-1.42x this corrected value, not 1.68-1.71x.
   } else {
     stop(paste0("Incorrect value for 'sensor_Y' : ", sensor_Y))
   }
@@ -515,56 +425,6 @@ W_nm_out <- function(sensor_Y){
     stop(paste0("Incorrect value for 'sensor_Y' : ",sensor_Y))
   }
 }
-
-# Get possible MODIS files
-# NB: At the moment this is optimized to work with just one day of data
-MODIS_dl <- function(prod_id, dl_date, bbox, usrname, psswrd, dl_files = TRUE, dl_dir = "data/MODIS"){
-  
-  # If download is FALSE, just print possible files
-  if(!dl_files){
-    message("Data files : ")
-    luna::getNASA(prod_id, dl_date, dl_date, aoi = bbox, download = FALSE)
-    message("Mask files : ")
-    luna::getNASA("MOD44W", dl_date, dl_date, aoi = bbox, download = FALSE)
-  } else {
-    message("Data files : ")
-    luna::getNASA(prod_id, dl_start, dl_start, aoi = bbox, download = TRUE, overwrite = FALSE,
-                  path = dl_dir, username = earth_up$usrname, password = earth_up$psswrd)
-    message("Mask files : ")
-    luna::getNASA("MOD44W", dl_start, dl_start, aoi = bbox, download = TRUE, overwrite = FALSE,
-                  path = dl_dir, username = usrname, password = psswrd)
-  }
-}
-
-# Process MODIS data in a batch
-# file_names <- list.files(path = "data/MODIS", pattern = "MOD", full.names = TRUE)
-# file_names <- list.files(path = "data/MODIS", pattern = "MYD", full.names = TRUE)
-MODIS_proc <- function(file_names, bbox, water_mask = FALSE){
-  
-  # Load files with desired layers etc.
-  # NB: If run in parallel, merge() causes a crash to desktop
-  if(water_mask){
-    data_layers <- lapply(file_names, rast, subds = 2)
-    data_merge <- do.call(merge, data_layers)
-    # plot(data_merge)
-    data_base <- terra::ifel(data_merge %in% c(1, 2, 3, 4, 5), NA, data_merge)
-    # plot(data_base)
-  } else {
-    data_layers <- lapply(file_names, rast, lyrs = 3) # Blue green band width; 459-479 nm
-    data_base <- do.call(merge, data_layers)
-    # plot(data_base)
-  }
-  
-  # Project to EPSG:4326
-  data_base_proj <- raster::project(data_base, y = "EPSG:4326")
-  # plot(data_base_proj)
-  
-  # Crop to bbox and exit
-  data_crop <- raster::crop(data_base_proj, bbox)
-  # plot(data_crop)
-  return(data_crop)
-}
-
 
 # Statistics --------------------------------------------------------------
 
@@ -754,24 +614,6 @@ base_stats <- function(x_vec, y_vec){
 
 
 # Matchup processing ------------------------------------------------------
-
-# get n nearest pixels
-get_nearest_pixels <- function(df_data, target_lat, target_lon, n_pixels){
-  
-  # Extract latitude and longitude into a matrix
-  df_coords <- df_data[, c("latitude", "longitude")]
-  
-  # Target coordinate as a data.frame
-  target_coord <- data.frame(latitude = target_lat, 
-                             longitude = target_lon)
-  
-  # Find the indices of the 5 nearest neighbors
-  knn_indices <- get.knnx(df_coords, target_coord, k = n_pixels)
-  
-  # Extract the 5 nearest rows
-  df_res <- df_data[as.vector(knn_indices$nn.index), ]
-  return(df_res)
-}
 
 # Function that interrogates each matchup file to produce the needed output for all following comparisons
 process_matchup_file <- function(file_path){
@@ -980,6 +822,12 @@ global_stats_impl <- function(site_name, sensor_Y, select_daily = TRUE){
   # Filter data.frame accordingly
   match_base_filt <- filter(match_base, wavelength %in% W_nm) #|>
     # mutate(wavelength_idx = wavelength, .before = wavelength)
+
+  # Remove any erroneously high (physically impossible) Hyp values before computing statistics --
+  # mirrors the equivalent filter already applied in global_scatterplot() (see Bug 3,
+  # manuscript/upstream-data-bugs.md), previously missing here (roadmap.md open item 11), which let
+  # figures and statistics CSVs disagree whenever such a value was present.
+  match_base_filt <- match_base_filt |> filter(Hyp <= 1)
 
   # Attach diff_time/dist (per file_name) needed by daily_closest_matchup() below
   match_base_filt <- match_base_filt |> left_join(match_base_details, by = "file_name")
@@ -1536,9 +1384,8 @@ db_matchup_all <- function(db_path, sensor_Y_vec = db_satellite_names, agg_metho
 # below), and the satellite value is the mean of whichever pixels survived every upstream QC gate
 # and the site's pixel_filter_fn(). Full hyperspectral raw rows, Hyp_nosc, and separate std_max/
 # std_min rows present in real files are NOT reproduced -- confirmed unused by every consumer in
-# this pipeline (load_matchup_mean(), load_matchup_long(), sat_var_check(); load_matchup_var() is
-# dead code, zero callers) and Hyp_nosc isn't derivable from the .db at all (see 0_functions.R's
-# db_matchup_pixels() docs).
+# this pipeline (load_matchup_mean(), load_matchup_long(), sat_var_check()) and Hyp_nosc isn't
+# derivable from the .db at all (see 0_functions.R's db_matchup_pixels() docs).
 # df_matchup: one matchup_id's surviving satellite pixel rows for one sensor_Y (post QC gates and
 #     pixel_filter_fn(), from db_export_matchups_site())
 # sat_radiometer_id: the satellite's radiometer.id (db_radiometer_id()), written into the
@@ -2074,97 +1921,6 @@ validate_derived_site <- function(site_name, tag, db_path = "~/pCloudDrive/Docum
 # Plotting functions ------------------------------------------------------
 
 # Plot data based on wavelength group
-plot_matchup_nm <- function(df, x_sensor, y_sensor){
-  colours_nm <- colour_nm_func(y_sensor)
-  df_prep <- df |> filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor)))
-  if(y_sensor == "PACE"){
-    df_prep <- df_prep |>
-      mutate(wavelength = cut(wavelength,
-                              breaks = c(350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1050),
-                              labels = names(colours_nm),
-                              include.lowest = TRUE, right = TRUE))
-  }
-  df_prep |>
-    ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = as.factor(wavelength), shape = site_name), size = 3) +
-    geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
-         x = paste("RHOW", x_sensor),
-         y = paste("RHOW", y_sensor),
-         colour = "Wavelength (nm)") +
-    scale_colour_manual(values = colours_nm) +
-    theme_minimal() +
-    theme(panel.border = element_rect(fill = NA, color = "black"),
-          legend.position = "bottom")
-}
-
-# Plot based on date of collection
-plot_matchup_date <- function(df, x_sensor, y_sensor){
-  df |>
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
-    mutate(date = as.factor(as.Date(dateTime_X))) |>
-    ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = date, shape = site_name), size = 3) +
-    geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor),
-         x = paste("RHOW", x_sensor),
-         y = paste("RHOW", y_sensor),
-         colour = "date") +
-    # scale_colour_brewer(palette = "Dark2")  +
-    theme_minimal() +
-    theme(panel.border = element_rect(fill = NA, color = "black"),
-          legend.position = "bottom")
-}
-
-# Plot based on dateTime of collection
-plot_matchup_dateTime <- function(df, x_sensor, y_sensor, date_filter){
-  df |>
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
-    mutate(date = as.Date(dateTime_X)) |>
-    filter(date == as.Date(date_filter)) |>
-    ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = dateTime_X, shape = site_name), size = 3) +
-    geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"-", date_filter),
-         x = paste("RHOW", x_sensor),
-         y = paste("RHOW", y_sensor),
-         colour = "time (UTC)") +
-    theme_minimal() +
-    theme(panel.border = element_rect(fill = NA, color = "black"),
-          legend.position = "bottom")
-}
-
-# Plot scatterplot based on the MAPE values of each comparison
-plot_matchup_Error_Bias <- function(df, x_sensor, y_sensor){
-  pl_Error <- df |>
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
-    ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = Error_50, shape = site_name), size = 3) +
-    geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    scale_colour_viridis_c(option = "D") +
-    labs(title = paste(x_sensor, "vs", y_sensor,"- Error"),
-         x = paste(x_sensor),
-         y = paste(y_sensor),
-         colour = "Error [%]") +
-    theme_minimal() +
-    theme(panel.border = element_rect(fill = NA, color = "black"),
-          legend.position = "bottom")
-  pl_Bias <- df |>
-    filter(!is.na(!!sym(x_sensor)), !is.na(!!sym(y_sensor))) |>
-    ggplot(aes_string(x = x_sensor, y = y_sensor)) +
-    geom_point(aes(colour = Bias_50, shape = site_name), size = 3) +
-    geom_abline(slope = 1, intercept = 0, color = "black", linetype = "dashed") +
-    scale_colour_viridis_c(option = "A") +
-    labs(title = paste("RHOW","-", x_sensor, "vs", y_sensor,"- Bias"),
-         x = paste("RHOW", x_sensor),
-         y = paste("RHOW", y_sensor),
-         colour = "Bias [%]") +
-    theme_minimal() +
-    theme(panel.border = element_rect(fill = NA, color = "black"),
-          legend.position = "bottom")
-  ggpubr::ggarrange(pl_Error, pl_Bias, nrow = 2, ncol = 1)
-}
-
 # Code that preps the labels for plotting based on a given input
 pretty_label_func <- function(char_string){
   
@@ -2215,100 +1971,6 @@ pretty_label_func <- function(char_string){
                                 sensor_lab = sensor_lab)
   }
   return(pretty_labels)
-}
-
-# Plot a single matchup in final format
-plot_matchup_single_nm <- function(df, sensor_X, sensor_Y){
-
-  # Prep data
-  df_prep <- df |> 
-    filter(sensor %in% c(sensor_X, sensor_Y)) |> 
-    filter(wavelength >= 380, wavelength <= 700) |> 
-    mutate(wavelength_group = cut(wavelength,
-                                  breaks = c(350, 400, 450, 500, 550, 600, 650, 700),#, 750, 800),
-                                  labels = labels_nm[1:7],
-                                  include.lowest = TRUE, right = TRUE), .after = "wavelength") |> 
-    pivot_wider(names_from = sensor, values_from = rhow:std_min)
-  
-  # Get max values
-  if(grepl("VIIRS", sensor_Y)){
-  # NB: max/min is inverted in absolute values
-    max_X <- max(df_prep[paste0("std_min_",sensor_X)], na.rm = TRUE)
-    max_Y <- max(df_prep[paste0("std_min_",sensor_Y)], na.rm = TRUE)
-  } else {
-    max_X <- max(df_prep[paste0("rhow_",sensor_X)], na.rm = TRUE)
-    max_Y <- max(df_prep[paste0("rhow_",sensor_Y)], na.rm = TRUE)
-  }
-  max_axis <- max(max_X, max_Y)
-  
-  # Get global stats
-  x_vec <- df_prep[[paste0("rhow_",sensor_X)]]
-  y_vec <- df_prep[[paste0("rhow_",sensor_Y)]]
-  
-  # Calculate statistics
-  df_stats <- base_stats(x_vec, y_vec)
-  
-  # Get pretty labels
-  var_labs <- pretty_label_func("RHOW")
-  
-  # The first points
-  if(grepl("VIIRS", sensor_Y)){
-    pl_base <- ggplot(data = df_prep, 
-                      aes_string(x = paste0("rhow_",sensor_X), y = paste0("`rhow_",sensor_Y,"`"))) +
-      geom_errorbar(aes_string(xmin = paste0("std_min_",sensor_X), xmax = paste0("std_max_",sensor_X)), width = 0.001) +
-      geom_errorbar(aes_string(ymin = paste0("`std_min_",sensor_Y,"`"), ymax = paste0("`std_max_",sensor_Y,"`")), width = 0.001) +
-      geom_point(aes(colour = wavelength_group), size = 4, alpha = 0.9)
-  } else {
-    pl_base <- ggplot(data = df_prep, 
-                      aes_string(x = paste0("rhow_",sensor_X), y = paste0("`rhow_",sensor_Y,"`"))) +
-      geom_point(aes(colour = wavelength_group), size = 2, alpha = 0.7)
-  }
-  
-  # The final plot
-  pl_single <- pl_base +
-    # Add 1:1 line
-    geom_abline(slope = 1, intercept = 0, color = "black", linetype = "solid") +
-    # Add model II linear models and 95% CI
-    ## Bottom CI
-    geom_abline(slope = df_stats$Slope_II_low, intercept = df_stats$Slope_II_int_low, 
-                colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
-    geom_abline(slope = df_stats$Slope_II_low, intercept = df_stats$Slope_II_int_low, 
-                colour = "grey", linewidth = 1.0, linetype = "dashed") +
-    # Mid
-    geom_abline(slope = df_stats$Slope_II, intercept = df_stats$Slope_II_int, 
-                colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
-    geom_abline(slope = df_stats$Slope_II, intercept = df_stats$Slope_II_int, 
-                colour = "black", linewidth = 1.0, linetype = "dashed") +
-    ## Top CI
-    geom_abline(slope = df_stats$Slope_II_high, intercept = df_stats$Slope_II_int_high, 
-                colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid") +
-    geom_abline(slope = df_stats$Slope_II_high, intercept = df_stats$Slope_II_int_high, 
-                colour = "grey", linewidth = 1.0, linetype = "dashed") +
-    # geom_smooth(method = "lm", formula = y ~ x, colour = "white", alpha = 0.5, linewidth = 1.5, linetype = "solid", se = FALSE) +
-    # geom_smooth(method = "lm", formula = y ~ x, colour = "black", linewidth = 1, linetype = "dashed", se = FALSE) +
-    # Add global stats text
-    annotate(geom = "text", x = 0, y = max_axis, hjust = 0, vjust = 1, size = 4,
-             label = paste0("n: ", df_stats$n,
-                            "\nS: ", sprintf("%.2f", df_stats$Slope_II), "±",
-                                sprintf("%.2f", abs((df_stats$Slope_II_high - df_stats$Slope_II_low)/2)), 
-                            "\nβ: ", sprintf("%.1f", df_stats$Bias_50),
-                            "% \nϵ: ", sprintf("%.1f", df_stats$Error_50),"%")) +
-    # Make it pretty
-    labs(x = paste0(sensor_X,"; ", var_labs$units_lab),
-         y = paste0(sensor_Y,"; ", var_labs$units_lab),
-         colour = "Wavelength (nm)") +
-    scale_colour_manual(values = colour_nm_func(sensor_Y)) +
-    guides(colour = guide_legend(nrow = 1, override.aes = list(alpha = 1.0, size = 3))) +
-    coord_fixed(xlim = c(0, max_axis), ylim = c(0, max_axis)) +
-    theme_minimal() +
-    theme(panel.border = element_rect(fill = NA, color = "black"),
-          legend.title = element_text(size = 14),
-          legend.text = element_text(size = 12),
-          legend.position = "bottom",
-          axis.title.x = element_markdown(size = 12),
-          axis.title.y = element_markdown(size = 12),
-          axis.text = element_text(size = 10))
-  return(pl_single)
 }
 
 # Plot data based on wavelength group
@@ -2632,7 +2294,11 @@ global_scatterplot_waveband <- function(sensor_Z){
 
   # Per-(waveband, site) stats, combined into one newline-joined label per waveband so each
   # facet panel gets a single compact text block instead of one box per site
-  site_levels <- c("MAFR", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel")
+  # NB: must be kept in sync with available_sites()'s candidate_sites list -- MAFR_pixel/THFR_raw/
+  # MAFR_raw (added 2026-09-07) were previously missing here, silently NA-ing those sites' matchups
+  # out of this figure via the factor(levels =) coercion below (the same failure mode already fixed
+  # for Figure 11's site_name factor in code/5_figures.R on 2026-09-08 -- see that file's comment).
+  site_levels <- c("MAFR", "MAFR_pixel", "MAFR_raw", "THFR", "THFR_NE", "THFR_poly", "THFR_pixel", "THFR_raw")
   df_axis <- match_all |>
     group_by(waveband_label) |>
     summarise(max_axis = max(c(Hyp, Sat), na.rm = TRUE), .groups = "drop")
@@ -2675,7 +2341,8 @@ global_scatterplot_waveband <- function(sensor_Z){
     geom_text(data = df_stats, aes(label = label, y = max_axis), x = 0,
               hjust = 0, vjust = 1, size = 2.5, inherit.aes = FALSE) +
     facet_wrap(~waveband_label, scales = "free") +
-    scale_shape_manual(values = c(MAFR = 16, THFR = 17, THFR_NE = 15, THFR_poly = 3, THFR_pixel = 4), drop = TRUE) +
+    scale_shape_manual(values = c(MAFR = 16, MAFR_pixel = 1, MAFR_raw = 2, THFR = 17, THFR_NE = 15,
+                                  THFR_poly = 3, THFR_pixel = 4, THFR_raw = 5), drop = TRUE) +
     scale_colour_brewer(palette = "Set1", drop = TRUE) +
     ggh4x::facetted_pos_scales(x = pos_scales_x, y = pos_scales_y) +
     labs(x = paste0("HYPERNETS; ", var_labs$units_lab),

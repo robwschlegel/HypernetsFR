@@ -1137,3 +1137,173 @@ for(sY in sensor_Y_thfr){
   ggsave(file.path(out_dir, paste0("pixel_timeseries_", sY, ".png")), p_pixel_ts, width = 12, height = 9)
 }
 
+
+# Pixel spacing / effective grid resolution -----------------------------------
+# Prompted by Figure 1: PACE's pixel cloud visibly looks much more widely
+# spaced than AQUA's. Does each sensor's REAL pixel spacing (nearest-neighbour
+# distance between adjacent pixels in the inner 3x3 box, per matchup) match
+# its REPORTED nominal resolution (sensor_resolution_km(), code/0_functions.R),
+# or does the true on-the-ground spacing drift from the advertised number?
+#
+# Deliberately nearest-neighbour only, not every pairwise distance: for a 3x3
+# grid that's exactly 9 values per matchup (one per pixel, its distance to
+# whichever OTHER pixel in that same matchup sits closest to it), not the 36
+# pairwise combinations a full distance matrix would give.
+#
+# Restricted to the inner 3x3 grid (pixel_pos_grid_class(), defined above) --
+# the box size Hypernets_matchups itself actually exports, matching every
+# other "3x3" analysis in this script -- not the wider raw 5x5 the .db stores.
+pixel_nearest_neighbor_spacing <- function(db_path, sensor_Y){
+  df_pos <- db_matchup_pixels_qc(db_path, sensor_Y) |>
+    mutate(grid_class = pixel_pos_grid_class(pixel_pos)) |>
+    dplyr::filter(grid_class == "3x3") |>
+    distinct(matchup_id, match_date, pixel_pos, pixel_lon, pixel_lat)
+
+  df_pos |>
+    reframe({
+      if(n() < 2){
+        tibble(pixel_pos = pixel_pos, nn_dist_km = NA_real_)
+      } else {
+        dmat <- geosphere::distm(cbind(pixel_lon, pixel_lat), fun = geosphere::distHaversine) / 1000
+        diag(dmat) <- NA
+        tibble(pixel_pos = pixel_pos, nn_dist_km = apply(dmat, 1, min, na.rm = TRUE))
+      }
+    }, .by = c(matchup_id, match_date)) |>
+    mutate(sensor_Y = sensor_Y, .before = 1)
+}
+
+# Full-sensor pipeline: one row per pixel per matchup, written per-sensor
+# (daily/per-matchup granularity, as requested) plus one combined file.
+pixel_spacing_all <- tibble()
+for(sY in sensor_Y_thfr){
+  t0 <- Sys.time()
+  sensor_spacing <- tryCatch({
+    pixel_nearest_neighbor_spacing(db_path, sY)
+  }, warning = function(w){ message(conditionMessage(w)); tibble() })
+  if(nrow(sensor_spacing) == 0) next
+  message(sY, " pixel spacing: ", round(difftime(Sys.time(), t0, units = "secs"), 1), " sec, ",
+          nrow(sensor_spacing), " rows (", n_distinct(sensor_spacing$matchup_id), " matchups)")
+  write_csv(sensor_spacing, file.path(out_dir, paste0("pixel_spacing_", sY, ".csv")))
+  pixel_spacing_all <- bind_rows(pixel_spacing_all, sensor_spacing)
+}
+write_csv(pixel_spacing_all, file.path(out_dir, "pixel_spacing_all_sensors.csv"))
+
+# Summary: actual nearest-neighbour spacing vs. each sensor's reported nominal
+# resolution (sensor_resolution_km(), code/0_functions.R).
+pixel_spacing_summary <- pixel_spacing_all |>
+  summarise(n_pixels = n(), n_matchups = n_distinct(matchup_id),
+            mean_km = mean(nn_dist_km, na.rm = TRUE), median_km = median(nn_dist_km, na.rm = TRUE),
+            sd_km = sd(nn_dist_km, na.rm = TRUE), min_km = min(nn_dist_km, na.rm = TRUE),
+            max_km = max(nn_dist_km, na.rm = TRUE), .by = sensor_Y) |>
+  mutate(nominal_resolution_km = vapply(sensor_Y, sensor_resolution_km, numeric(1)), .after = sensor_Y,
+         ratio_mean_to_nominal = round(mean_km / nominal_resolution_km, 2)) |>
+  arrange(sensor_Y)
+write_csv(pixel_spacing_summary, file.path(out_dir, "pixel_spacing_summary.csv"))
+print(pixel_spacing_summary)
+
+# Visual: distribution of nearest-neighbour spacing per sensor, nominal
+# resolution marked as a red diamond reference point.
+p_spacing <- pixel_spacing_all |>
+  left_join(distinct(pixel_spacing_all, sensor_Y) |>
+              mutate(nominal_resolution_km = vapply(sensor_Y, sensor_resolution_km, numeric(1))),
+            by = "sensor_Y") |>
+  ggplot(aes(x = sensor_Y, y = nn_dist_km)) +
+  geom_boxplot(outlier.size = 0.5) +
+  geom_point(aes(y = nominal_resolution_km), colour = "red", shape = 18, size = 4) +
+  labs(title = "THFR: actual nearest-neighbour pixel spacing vs. reported nominal resolution (red diamond)",
+       x = NULL, y = "Nearest-neighbour distance (km)") +
+  theme_bw()
+ggsave(file.path(out_dir, "pixel_spacing_vs_nominal.png"), p_spacing, width = 9, height = 6)
+
+
+# MAFR pixel spacing (cross-site comparison) ----------------------------------
+# Same nearest-neighbour spacing check as above, run for MAFR too -- both so
+# PACE's wide spacing (and OLCI's row-duplication, Bug 14) can be checked for
+# consistency across sites rather than assumed to be THFR-specific, and
+# because Bug 14's own spot-check already found the row-0/row-1 duplication
+# in mafr_2024.db too. MAFR spans two .db files with independent
+# auto-increment matchup ids (same reason db_export_matchups_multi() loops
+# both in code/0_functions.R), so this loops sensor x db_path and tags each
+# row with db_source to keep matchup_id unambiguous across the two files.
+
+mafr_db_paths <- c("~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2024.db",
+                    "~/pCloudDrive/Documents/OMTAB/HYPERNETS/FR/mafr_2025.db")
+
+db_matchup_pixels_qc_mafr <- function(db_path, sensor_Y){
+  sat_lon_col <- paste0("lon_", sensor_Y); sat_lat_col <- paste0("lat_", sensor_Y)
+  rhow_limit <- site_rhow_limit("MAFR")
+  pixel_dist_limit <- 2 * sensor_resolution_km(sensor_Y)
+  db_matchup_pixels(db_path, sensor_Y) |>
+    mutate(dist_km_matchup = distHaversine(cbind(lon_Hyp, lat_Hyp), cbind(.data[[sat_lon_col]], .data[[sat_lat_col]])) / 1000) |>
+    filter(diff_time_min <= site_diff_time_limit("MAFR"), dist_km_matchup <= 10,
+           Hyp <= rhow_limit, .data[[sensor_Y]] <= rhow_limit,
+           Hyp >= 0, .data[[sensor_Y]] >= 0,
+           dist_km <= pixel_dist_limit)
+}
+
+# Per (db_path, sensor_Y): same nearest-neighbour logic as
+# pixel_nearest_neighbor_spacing() above, but tolerant of a sensor missing
+# entirely from one db file (e.g. Bug 11 -- mafr_2025.db has no SNPP column
+# at all, a raw DBI error rather than the empty-tibble warning
+# db_matchup_pixels() normally returns for "no data").
+pixel_nearest_neighbor_spacing_mafr <- function(db_path, sensor_Y){
+  df_pos <- tryCatch({
+    db_matchup_pixels_qc_mafr(db_path, sensor_Y) |>
+      mutate(grid_class = pixel_pos_grid_class(pixel_pos)) |>
+      dplyr::filter(grid_class == "3x3") |>
+      distinct(matchup_id, match_date, pixel_pos, pixel_lon, pixel_lat)
+  }, warning = function(w){ message(conditionMessage(w)); tibble() },
+     error = function(e){ message(conditionMessage(e)); tibble() })
+  if(nrow(df_pos) == 0) return(tibble())
+
+  df_pos |>
+    reframe({
+      if(n() < 2){
+        tibble(pixel_pos = pixel_pos, nn_dist_km = NA_real_)
+      } else {
+        dmat <- geosphere::distm(cbind(pixel_lon, pixel_lat), fun = geosphere::distHaversine) / 1000
+        diag(dmat) <- NA
+        tibble(pixel_pos = pixel_pos, nn_dist_km = apply(dmat, 1, min, na.rm = TRUE))
+      }
+    }, .by = c(matchup_id, match_date)) |>
+    mutate(sensor_Y = sensor_Y, db_source = basename(db_path), .before = 1)
+}
+
+pixel_spacing_mafr_all <- tibble()
+for(sY in sensor_Y_thfr){
+  t0 <- Sys.time()
+  sensor_spacing <- map_dfr(mafr_db_paths, pixel_nearest_neighbor_spacing_mafr, sensor_Y = sY)
+  if(nrow(sensor_spacing) == 0) next
+  message("MAFR ", sY, " pixel spacing: ", round(difftime(Sys.time(), t0, units = "secs"), 1), " sec, ",
+          nrow(sensor_spacing), " rows (", n_distinct(paste(sensor_spacing$matchup_id, sensor_spacing$db_source)), " matchups)")
+  write_csv(sensor_spacing, file.path(out_dir, paste0("pixel_spacing_MAFR_", sY, ".csv")))
+  pixel_spacing_mafr_all <- bind_rows(pixel_spacing_mafr_all, sensor_spacing)
+}
+write_csv(pixel_spacing_mafr_all, file.path(out_dir, "pixel_spacing_MAFR_all_sensors.csv"))
+
+# Summary: actual nearest-neighbour spacing vs. nominal resolution, at MAFR.
+# n_matchups counts unique (matchup_id, db_source) pairs, not matchup_id alone
+# -- mafr_2024.db/mafr_2025.db's ids collide (independent auto-increment).
+pixel_spacing_summary_mafr <- pixel_spacing_mafr_all |>
+  summarise(n_pixels = n(), n_matchups = n_distinct(paste(matchup_id, db_source)),
+            mean_km = mean(nn_dist_km, na.rm = TRUE), median_km = median(nn_dist_km, na.rm = TRUE),
+            sd_km = sd(nn_dist_km, na.rm = TRUE), min_km = min(nn_dist_km, na.rm = TRUE),
+            max_km = max(nn_dist_km, na.rm = TRUE), .by = sensor_Y) |>
+  mutate(nominal_resolution_km = vapply(sensor_Y, sensor_resolution_km, numeric(1)), .after = sensor_Y,
+         ratio_mean_to_nominal = round(mean_km / nominal_resolution_km, 2)) |>
+  arrange(sensor_Y)
+write_csv(pixel_spacing_summary_mafr, file.path(out_dir, "pixel_spacing_summary_MAFR.csv"))
+print(pixel_spacing_summary_mafr)
+
+p_spacing_mafr <- pixel_spacing_mafr_all |>
+  left_join(distinct(pixel_spacing_mafr_all, sensor_Y) |>
+              mutate(nominal_resolution_km = vapply(sensor_Y, sensor_resolution_km, numeric(1))),
+            by = "sensor_Y") |>
+  ggplot(aes(x = sensor_Y, y = nn_dist_km)) +
+  geom_boxplot(outlier.size = 0.5) +
+  geom_point(aes(y = nominal_resolution_km), colour = "red", shape = 18, size = 4) +
+  labs(title = "MAFR: actual nearest-neighbour pixel spacing vs. reported nominal resolution (red diamond)",
+       x = NULL, y = "Nearest-neighbour distance (km)") +
+  theme_bw()
+ggsave(file.path(out_dir, "pixel_spacing_vs_nominal_MAFR.png"), p_spacing_mafr, width = 9, height = 6)
+

@@ -5,15 +5,16 @@
 # code/0_functions.R).
 #
 # NB: unlike Doxaran et al. 2024 (who used a fixed 3x3-pixel-box/+-30 min window at
-# the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde),
-# this pipeline uses a PER-SENSOR distance ceiling (dist_limit = 2x sensor_resolution_km(sensor_Y),
-# e.g. 0.6 km for OLCI, 2 km for AQUA/PACE, 1.5 km for VIIRS -- a flat 10 km ceiling, raised from
-# 5 km on 2026-07-14 to accommodate a known THFR PACE pixel-extraction offset (see
-# manuscript/upstream-data-bugs.md), was used until 2026-09-03, and a 3x multiplier until
-# 2026-09-04) for every site, but a SITE-SPECIFIC time
-# window (site_diff_time_limit() in code/0_functions.R: 15 min at MAFR, 30 min at THFR).
-# This script checks both choices, and is also where the before/after comparison of
-# daily_closest_matchup() (see code/0_functions.R) lives.
+# the clear-ish Berre lagoon and a nearest-pixel/+-15 min window at turbid Gironde), this
+# pipeline currently uses ONE flat distance ceiling (dist_limit = 5 km, process_sensor() in
+# code/0_functions.R) and ONE time window (site_diff_time_limit(): 30 min, both MAFR and THFR
+# since 2026-09-10) for every site. Both choices have moved over time -- the distance ceiling
+# was a per-sensor 2x/3x sensor_resolution_km(sensor_Y) formula until 2026-09-04 (reverted after
+# it eliminated nearly all MAFR matchups), and the time window was 15 min at MAFR/30 min at THFR
+# until 2026-09-10 (raised to a shared 30 min after an empirical check found the wider window
+# nearly doubled usable MAFR matchups for a small cost in error -- see site_diff_time_limit()'s
+# own docstring in code/0_functions.R for the numbers). This script checks both choices, and is
+# also where the before/after comparison of daily_closest_matchup() (see code/0_functions.R) lives.
 #
 # This script is intended to be run AFTER 1_matchups_single.R (needs
 # output/matchup_stats_RHOW_*.csv and output/matchup_noQC_stats_RHOW_*.csv) and is
@@ -31,42 +32,48 @@ source("code/0_functions.R")
 # Distance sanity check ------------------------------------------------------
 
 # Load all individual matchup stats across sensor families, both QC-passed and not,
-# so the full range of observed distances (not just the already-filtered subset) is visible
-matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup_noQC_stats_RHOW_", 
-                            full.names = TRUE), read_csv, show_col_types = FALSE)
+# so the full range of observed distances (not just the already-filtered subset) is visible.
+# Uses one of the (always non-empty) matchup_stats_RHOW_*.csv files as the column-type reference
+# for every file read here -- with a wide-enough diff_time_limit, a matchup_noQC_stats_RHOW_*.csv
+# can end up with zero data rows (e.g. OLCI/VIIRS once MAFR/THFR share one 30 min window, 2026-09-10),
+# and read_csv() can't infer real column types (e.g. lon_X as double) from an empty file, which then
+# fails to bind_rows() against the populated files with a type mismatch.
+matchup_noQC_ref_spec <- spec_csv(dir("output", pattern = "matchup_stats_RHOW_", full.names = TRUE)[1])
+matchup_all_noQC <- map_dfr(dir("output", pattern = "matchup_stats_RHOW_|matchup_noQC_stats_RHOW_",
+                            full.names = TRUE), read_csv, col_types = matchup_noQC_ref_spec)
 
-# Confirm nearest-pixel distances relative to the per-sensor distance ceiling.
-# NB: dist_limit is now 2x sensor_resolution_km(sensor_Y) (2026-09-04, tightened from 3x), replacing
-# the old flat 10 km ceiling (itself raised from 5 km on 2026-07-14 to accommodate a systematic
-# pixel-extraction offset in THFR PACE data -- see manuscript/upstream-data-bugs.md). For MAFR and
-# all sensors except THFR PACE, distances remain well under 1 km in practice.
+# Confirm nearest-pixel distances relative to the live distance ceiling.
+# NB: dist_limit is a flat 5 km for every site/sensor (process_sensor() in code/0_functions.R,
+# reverted 2026-09-04 back from a per-sensor 2x/3x sensor_resolution_km(sensor_Y) formula that
+# eliminated nearly all MAFR matchups; itself raised from an earlier flat 5 km on 2026-07-14 to
+# accommodate a systematic pixel-extraction offset in THFR PACE data -- see
+# manuscript/upstream-data-bugs.md -- before landing back on 5 km). For MAFR and all sensors
+# except THFR PACE, distances remain well under 1 km in practice. sensor_resolution_km() itself
+# is still used elsewhere (e.g. as reference context here) but no longer drives this gate.
 dist_summary <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   summarise(dist_min = min(dist, na.rm = TRUE),
             dist_median = median(dist, na.rm = TRUE),
             dist_p95 = quantile(dist, 0.95, na.rm = TRUE),
             dist_max = max(dist, na.rm = TRUE),
-            dist_limit = sensor_resolution_km(sensor_Y[1]) * 2,
+            dist_limit = 5,
             n_over_1km = sum(dist > 1, na.rm = TRUE),
             n_over_limit = sum(dist > dist_limit, na.rm = TRUE),
             n = dplyr::n(),
             .by = c("site_name", "sensor_Y"))
 print(dist_summary)
 
-# Visualise the distance distribution per site/sensor, with the per-sensor 2x-resolution ceiling
-# marked (varies by facet column, since the plot already facets by sensor_Y)
+# Visualise the distance distribution per site/sensor, with the live flat 5 km ceiling marked
 dist_limit_ref <- tibble(sensor_Y = unique(matchup_all_noQC$sensor_Y)) |>
-  mutate(dist_limit = vapply(sensor_Y, sensor_resolution_km, numeric(1)) * 2)
+  mutate(dist_limit = 5)
 
 pl_dist <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   ggplot(aes(x = dist)) +
   geom_histogram(binwidth = 0.1) +
-  # geom_vline(data = dist_limit_ref, aes(xintercept = dist_limit), colour = "red", linetype = "dashed") +
-  geom_vline(data = dist_limit_ref, aes(xintercept = 5), colour = "red", linetype = "dashed") +
+  geom_vline(data = dist_limit_ref, aes(xintercept = dist_limit), colour = "red", linetype = "dashed") +
   labs(x = "Distance between HYPERNETS station and nearest satellite pixel (km)",
        y = "Count",
-      #  title = "Distance check (per-sensor 2x-resolution ceiling shown in red)") +
        title = "Distance check (5 km shown in red)") +
   facet_grid(site_name ~ sensor_Y, scales = "free_y") +
   theme_minimal() +
@@ -76,24 +83,27 @@ ggsave("figures/sensitivity_distance_check.png", pl_dist, width = 12, height = 4
 
 # Time-window sensitivity -----------------------------------------------------
 
-# For each site, look at how Error_50/Bias_50 vary with diff_time, to justify the
-# site-specific time-window choice (site_diff_time_limit(): MAFR = 15 min, THFR = 30 min).
+# For each site, look at how Error_50/Bias_50 vary with diff_time, to justify the time-window
+# choice (site_diff_time_limit(): 30 min, both MAFR and THFR, since 2026-09-10 -- previously 15
+# min at MAFR/30 min at THFR).
 # NB: follows the same approach as the Tara "in review" paper's time-window check (which found
-# no significant trend there); here a site-dependent trend is plausible given MAFR's much
-# faster tidal turbidity dynamics relative to THFR's more stable lagoon water -- that is
-# exactly the asymmetry the two different site-specific limits are meant to capture.
+# no significant trend there); a site-dependent trend is still plausible given MAFR's much faster
+# tidal turbidity dynamics relative to THFR's more stable lagoon water, even though both sites now
+# share the same 30 min window (site_diff_time_limit() still returns a value per site_name, so a
+# future site-specific split remains easy to reintroduce here if the data warrant it).
 pl_time_sensitivity <- matchup_all_noQC |>
   filter(sensor_X == "Hyp") |>
   filter(Error_50 < 1000) |> # TODO: Loop back and look at these high error values
   ggplot(aes(x = diff_time, y = Error_50)) +
   geom_point(aes(colour = dist), alpha = 0.6) +
   geom_smooth(method = "lm", se = TRUE) +
-  geom_vline(data = data.frame(site_name = c("MAFR", "THFR"), time_limit = c(15, 30)),
+  geom_vline(data = data.frame(site_name = c("MAFR", "THFR")) |>
+               mutate(time_limit = vapply(site_name, site_diff_time_limit, numeric(1))),
              aes(xintercept = time_limit), colour = "red", linetype = "dashed") +
   scale_colour_viridis_c() +
   labs(x = "Time difference between HYPERNETS scan and satellite overpass (minutes)",
        y = "Error (%)", colour = "Distance\n(km)",
-       title = "Time-window sensitivity per site (site-specific limit shown in red)") +
+       title = "Time-window sensitivity per site (30 min limit shown in red)") +
   facet_grid(site_name ~ sensor_Y, scales = "free") +
   theme_minimal() +
   theme(panel.border = element_rect(fill = NA, colour = "black"))
